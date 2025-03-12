@@ -433,15 +433,14 @@ fn validate_action(
       let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
       let expected_shares_output = shares_input - shares_earned
 
-      let a_ada_asset_check = and {
-          as_output == as_input + a_add,
-          is_ada_pool || ada_output >= pool_oil,
-        }
+      let a_asset_check = as_output == as_input + a_add
       let b_asset_check = bs_output == bs_input + b_add
+      let ada_check = ada_output >= pool_oil
       let shares_asset_check = shares_output == expected_shares_output
       and {
-        a_ada_asset_check,
+        a_asset_check,
         b_asset_check,
+        ada_check,
         shares_asset_check,
         a_add > 0,
         b_add > 0,
@@ -454,14 +453,13 @@ fn validate_action(
       let a_remove = shares_add * pool_input_a_liquidity / shares_total_emitted
       let b_remove = shares_add * pool_input_b_liquidity / shares_total_emitted
       let expected_shares_output = shares_input + shares_add
-      let a_ada_asset_check = and {
-          as_output == as_input - a_remove,
-          is_ada_pool || ada_output >= pool_oil,
-        }
+      let a_asset_check = as_output == as_input - a_remove
+      let ada_check = ada_output >= pool_oil
       let b_asset_check = bs_output == bs_input - b_remove
       let shares_asset_check = shares_output == expected_shares_output
       and {
-        a_ada_asset_check,
+        a_asset_check,
+        ada_check,
         b_asset_check,
         shares_asset_check,
         shares_add > 0,
