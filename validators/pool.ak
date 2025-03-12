@@ -135,15 +135,7 @@ validator pool {
     let ada_output = lovelace_of(pool_output_value)
 
     let expected_token_count =
-      if is_ada_pool {
-        4
-      } else {
-        5
-      } - if shares_output == 0 {
-        1
-      } else {
-        0
-      }
+      expected_pool_token_count(is_ada_pool, shares_output)
     and {
       // Address doesn't change
       pool_output.address == pool_address,
@@ -281,11 +273,7 @@ validator pool {
         bs_liquidity_pool > 0,
         ada_pool >= pool_oil,
         shares_user > 0,
-        token_count == if is_ada_pool {
-          4
-        } else {
-          5
-        },
+        token_count == expected_pool_token_count(is_ada_pool, shares_pool),
         quantity_of(pool_output_value, pool_hash, validity_asset_name) == 1,
       }
     }
@@ -604,6 +592,18 @@ fn count_tokens(v: Value) -> Int {
 
 fn div_ceil(a: Int, b: Int) -> Int {
   a / b + if a % b > 0 {
+    1
+  } else {
+    0
+  }
+}
+
+fn expected_pool_token_count(is_ada_pool: Bool, share_count: Int) -> Int {
+  if is_ada_pool {
+    4
+  } else {
+    5
+  } - if share_count == 0 {
     1
   } else {
     0
