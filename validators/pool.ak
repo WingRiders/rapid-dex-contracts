@@ -3,7 +3,9 @@ use aiken/crypto.{ScriptHash}
 use aiken/math.{min}
 use cardano/address.{Address, Script, VerificationKey}
 use cardano/assets.{AssetName, PolicyId, Value, quantity_of}
-use cardano/transaction.{InlineDatum, OutputReference, Transaction}
+use cardano/transaction.{
+  InlineDatum, NoDatum, Output, OutputReference, Transaction,
+}
 
 type PoolDatum {
   a_policy_id: PolicyId,
@@ -34,6 +36,8 @@ type PoolRedeemer {
 const validity_asset_name = "P"
 
 const pool_oil = 2_000_000
+
+const treasury_oil = 2_000_000
 
 const max_share_tokens = 9_223_372_036_854_775_807
 
@@ -127,6 +131,7 @@ validator pool {
       pool_input_datum.lovelace_fee == pool_output_datum.lovelace_fee,
       pool_input_datum.treasury == pool_output_datum.treasury,
       validate_action(
+        transaction.outputs,
         is_ada_pool,
         validity_policy_id,
         pool_redeemer,
@@ -156,6 +161,7 @@ validator pool {
 }
 
 fn validate_action(
+  outputs: List<Output>,
   is_ada_pool: Bool,
   validity_policy_id: PolicyId,
   pool_redeemer: PoolRedeemer,
@@ -354,13 +360,62 @@ fn validate_action(
           a_ada_asset_check,
           b_asset_check,
           shares_asset_check,
-          pool_input_datum.a_treasury > 0,
-          pool_input_datum.b_treasury > 0,
+        }
+      }
+      let is_treasury_output_correct = {
+        expect Some(treasury_output) = list.at(outputs, 1)
+        let is_address_correct =
+          treasury_output.address == pool_input_datum.treasury
+        let is_value_correct = {
+          let as_treasury =
+            quantity_of(
+              treasury_output.value,
+              pool_input_datum.a_policy_id,
+              pool_input_datum.a_asset_name,
+            )
+          let ada_treasury = quantity_of(treasury_output.value, "", "")
+          let bs_treasury =
+            quantity_of(
+              treasury_output.value,
+              pool_input_datum.b_policy_id,
+              pool_input_datum.b_asset_name,
+            )
+          let a_ada_asset_check =
+            if is_ada_pool {
+              as_treasury >= pool_input_datum.a_treasury + treasury_oil
+            } else {
+              and {
+                as_treasury >= pool_input_datum.a_treasury,
+                ada_treasury >= treasury_oil,
+              }
+            }
+          let b_asset_check = bs_treasury >= pool_input_datum.b_treasury
+          // If ada pool: ada + token b; otherwise ada + token a + token b
+          let token_count_check =
+            count_tokens(treasury_output.value) == if is_ada_pool {
+              2
+            } else {
+              3
+            }
+          and {
+            a_ada_asset_check,
+            b_asset_check,
+            token_count_check,
+          }
+        }
+        let is_datum_correct = treasury_output.datum == NoDatum
+        and {
+          is_address_correct,
+          is_value_correct,
+          is_datum_correct,
         }
       }
       and {
         is_treasury_correct,
         is_value_correct,
+        pool_input_datum.a_treasury > 0,
+        pool_input_datum.b_treasury > 0,
+        is_treasury_output_correct,
       }
     }
   }
