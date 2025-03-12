@@ -266,6 +266,7 @@ fn validate_action(
           a_ada_asset_check,
           b_asset_check,
           shares_asset_check,
+          provided > 0,
         }
       }
 
@@ -282,10 +283,10 @@ fn validate_action(
 
       let is_value_correct = {
         let shares_total_emitted = max_share_tokens - shares_input
-        let earned_shares_from_a = a_add * shares_total_emitted / shares_input
-        let earned_shares_from_b = b_add * shares_total_emitted / shares_input
-        let earned_shares = min(earned_shares_from_a, earned_shares_from_b)
-        let expected_shares_output = shares_input - earned_shares
+        let shares_earned_from_a = a_add * shares_total_emitted / shares_input
+        let shares_earned_from_b = b_add * shares_total_emitted / shares_input
+        let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
+        let expected_shares_output = shares_input - shares_earned
 
         let a_ada_asset_check = and {
             as_output == as_input + a_add,
@@ -297,6 +298,9 @@ fn validate_action(
           a_ada_asset_check,
           b_asset_check,
           shares_asset_check,
+          a_add > 0,
+          b_add > 0,
+          shares_earned > 0,
         }
       }
       and {
@@ -310,12 +314,10 @@ fn validate_action(
           pool_output_datum.a_treasury == pool_input_datum.a_treasury,
           pool_output_datum.b_treasury == pool_input_datum.b_treasury,
         }
+      let shares_total_emitted = max_share_tokens - shares_input
+      let a_remove = shares_add * pool_input_a_liquidity / shares_total_emitted
+      let b_remove = shares_add * pool_input_b_liquidity / shares_total_emitted
       let is_value_correct = {
-        let shares_total_emitted = max_share_tokens - shares_input
-        let a_remove =
-          shares_add * pool_input_a_liquidity / shares_total_emitted
-        let b_remove =
-          shares_add * pool_input_b_liquidity / shares_total_emitted
         let expected_shares_output = shares_input + shares_add
         let a_ada_asset_check = and {
             as_output == as_input - a_remove,
@@ -332,6 +334,8 @@ fn validate_action(
       and {
         is_treasury_correct,
         is_value_correct,
+        shares_add > 0,
+        a_remove > 0 || b_remove > 0,
       }
     }
     ExtractTreasury -> {
