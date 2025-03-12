@@ -22,6 +22,7 @@ type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
   AddLiquidity { a_add: Int, b_add: Int }
   WithdrawLiquidity { shares_add: Int }
+  Donate
 }
 
 const validity_asset_name = "P"
@@ -51,7 +52,7 @@ validator pool {
   //
   // NOTE: the contract doesn't check user compensations directly
   //       but only the pool values;
-  //       it is assumed the users takes the compensations wherever they choose to
+  //       it is assumed the users take the compensations wherever they choose to
   //       as the pool only offers direct interactions without request intermediaries
   //
   // For swaps
@@ -87,8 +88,6 @@ validator pool {
   //
   // NOTE: redeemed shares are taken from the redeemer and are assumed to be fully added into the pool
   //       strict equality is used for the pool value checks
-  //
-  // TODO: Donate redeemer
   spend(
     datum: Option<Data>,
     redeemer: Data,
@@ -159,7 +158,7 @@ validator pool {
 
   // NOTE: the contract doesn't check user compensations directly
   //       but only the pool and mint values
-  //       it is assumed the users takes the compensations wherever they choose to
+  //       it is assumed the users take the compensations wherever they choose to
   //
   // NOTE: the policy mints max shares - burned shares
   //       for more details read https://uniswap.org/whitepaper.pdf section 3.4
@@ -423,6 +422,7 @@ fn validate_action(
         received > 0,
       }
     }
+
     AddLiquidity { a_add, b_add } -> {
       let shares_total_emitted = max_share_tokens - shares_input
       let shares_earned_from_a = a_add * shares_total_emitted / shares_input
@@ -466,6 +466,13 @@ fn validate_action(
         b_remove > 0,
       }
     }
+
+    Donate -> and {
+        ada_output >= lovelace_of(pool_input_value),
+        as_output >= as_input,
+        bs_output >= bs_input,
+        shares_output == shares_input,
+      }
   }
 }
 
