@@ -29,8 +29,6 @@ type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
   AddLiquidity { a_add: Int, b_add: Int }
   WithdrawLiquidity { shares_add: Int }
-  // REVIEW: allow changing the staking credentials and the treasury address?
-  //         have an authority token/key for this?
   ExtractTreasury
 }
 
