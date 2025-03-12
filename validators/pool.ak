@@ -6,9 +6,7 @@ use cardano/address.{Address, Script, VerificationKey}
 use cardano/assets.{
   AssetName, PolicyId, Value, ada_policy_id, lovelace_of, quantity_of,
 }
-use cardano/transaction.{
-  InlineDatum, NoDatum, Output, OutputReference, Transaction,
-}
+use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
 
 type PoolDatum {
   a_policy_id: PolicyId,
@@ -16,12 +14,7 @@ type PoolDatum {
   b_policy_id: PolicyId,
   b_asset_name: AssetName,
   swap_fee_points: Int,
-  protocol_fee_points: Int,
   fee_basis: Int,
-  // TODO: remove treasuries
-  a_treasury: Int,
-  b_treasury: Int,
-  treasury: Address,
   shares_asset_name: AssetName,
 }
 
@@ -29,14 +22,11 @@ type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
   AddLiquidity { a_add: Int, b_add: Int }
   WithdrawLiquidity { shares_add: Int }
-  ExtractTreasury
 }
 
 const validity_asset_name = "P"
 
 const pool_oil = 2_000_000
-
-const treasury_oil = 2_000_000
 
 const max_share_tokens = 9_223_372_036_854_775_807
 
@@ -72,7 +62,6 @@ validator pool {
   // * The swap provides at least some tokens
   // * User receives at least some tokens NOTE: increasing the min swap to make it harder to block the pool
   // * The swap fee is collected into the pool value
-  // * The protocol fee is collected into the pool value and tracked in treasuries
   //
   // For add liquidity
   // * Users gets the fair amount of compensation in shares
@@ -81,7 +70,6 @@ validator pool {
   // * The new pool shares are expected on the pool output value
   // * User provides at least some tokens
   // * User receives at least some shares
-  // * Treasuries don't change
   //
   // NOTE: earned shares are determined as min(earned shares from added a, earned shares from added b)
   //       that means it's possible to donate liquidity into the pool.
@@ -96,22 +84,9 @@ validator pool {
   // * The new shares are expected on the pool output value
   // * User provides at least some shares
   // * User receives at least some A and B tokens
-  // * Treasuries don't change
   //
   // NOTE: redeemed shares are taken from the redeemer and are assumed to be fully added into the pool
   //       strict equality is used for the pool value checks
-  //
-  // For extract treasury:
-  // * The new A/B values don't include the treasuries // TODO: probably don't need this
-  // * The new ada in the pool is at least pool oil
-  // * The new treasuries are 0
-  // * At least one of the old treasuries is bigger that zero
-  // * The second transaction output is a treasury output that
-  //   goes to the treasury address
-  //   has no datum
-  //   has 2 or 3 tokens depending on whether the pool swaps ada
-  //   has at least treasury oil ada
-  //   contains the pool treasury value
   //
   // TODO: Donate redeemer
   spend(
@@ -167,24 +142,20 @@ validator pool {
       quantity_of(pool_output_value, validity_policy_id, validity_asset_name) == 1,
       // Asset A, Asset B, Ada if Asset A != Ada, Shares Asset, Validity Asset
       count_tokens(pool_output_value) == expected_token_count,
-      // Datum (apart from a/b_treasury) is preserved
+      // Datum is preserved
       pool_input_datum.a_policy_id == pool_output_datum.a_policy_id,
       pool_input_datum.a_asset_name == pool_output_datum.a_asset_name,
       pool_input_datum.b_policy_id == pool_output_datum.b_policy_id,
       pool_input_datum.b_asset_name == pool_output_datum.b_asset_name,
       pool_input_datum.swap_fee_points == pool_output_datum.swap_fee_points,
-      pool_input_datum.protocol_fee_points == pool_output_datum.protocol_fee_points,
       pool_input_datum.fee_basis == pool_output_datum.fee_basis,
-      pool_input_datum.treasury == pool_output_datum.treasury,
       pool_input_datum.shares_asset_name == pool_output_datum.shares_asset_name,
       validate_action(
         pool_redeemer,
-        transaction.outputs,
         is_ada_pool,
         validity_policy_id,
         pool_input_datum,
         pool_input_value,
-        pool_output_datum,
         pool_output_value,
         pool_ada_output,
         pool_shares_output,
@@ -212,9 +183,8 @@ validator pool {
   // * the pool has positive B liquidity
   // * the pool has the expected number of tokens (a + b + ada if a != ada + shares + validity)
   // * the pool has datum inline
-  // * 0% <= fees <= 100%
+  // * 0% <= swap fee <= 100%
   // * assets are different and sorted, and don't overlap with validity token or shares
-  // * treasuries are 0
   // * two different tokens with the pool policy id are minted
   // * 1 pool validity token is minted
   //   (validity token policy id is pool script hash)
@@ -239,8 +209,7 @@ validator pool {
 
     let are_fees_sensible = and {
         pool_output_datum.swap_fee_points >= 0,
-        pool_output_datum.protocol_fee_points >= 0,
-        pool_output_datum.swap_fee_points + pool_output_datum.protocol_fee_points <= pool_output_datum.fee_basis,
+        pool_output_datum.swap_fee_points <= pool_output_datum.fee_basis,
       }
 
     expect Some(seed) = list.at(transaction.inputs, 0)
@@ -271,11 +240,6 @@ validator pool {
           pool_output_datum.b_asset_name != share_asset_name,
           pool_output_datum.b_asset_name != validity_asset_name,
         },
-      }
-
-    let are_treasuries_empty = and {
-        pool_output_datum.a_treasury == 0,
-        pool_output_datum.b_treasury == 0,
       }
 
     let is_pool_value_correct = {
@@ -354,7 +318,6 @@ validator pool {
     and {
       are_fees_sensible,
       are_assets_fine,
-      are_treasuries_empty,
       is_pool_value_correct,
       is_mint_correct,
       is_share_asset_name_stored,
@@ -368,12 +331,10 @@ validator pool {
 
 fn validate_action(
   pool_redeemer: PoolRedeemer,
-  outputs: List<Output>,
   is_ada_pool: Bool,
   validity_policy_id: PolicyId,
   pool_input_datum: PoolDatum,
   pool_input_value: Value,
-  pool_output_datum: PoolDatum,
   pool_output_value: Value,
   ada_output: Int,
   shares_output: Int,
@@ -410,11 +371,11 @@ fn validate_action(
     )
   let pool_input_a_liquidity =
     if is_ada_pool {
-      as_input - pool_oil - pool_input_datum.a_treasury
+      as_input - pool_oil
     } else {
-      as_input - pool_input_datum.a_treasury
+      as_input
     }
-  let pool_input_b_liquidity = bs_input - pool_input_datum.b_treasury
+  let pool_input_b_liquidity = bs_input
 
   when pool_redeemer is {
     Swap { swap_a_to_b, provided } -> {
@@ -423,64 +384,37 @@ fn validate_action(
           provided * pool_input_datum.swap_fee_points,
           pool_input_datum.fee_basis,
         )
-      let protocol_fee =
-        provided * pool_input_datum.protocol_fee_points / pool_input_datum.fee_basis
-
-      let (
-        expected_a_liquidity,
-        expected_b_liquidity,
-        expected_a_treasury,
-        expected_b_treasury,
-        received,
-      ) =
+      let (expected_a_liquidity, expected_b_liquidity, received) =
         if swap_a_to_b {
-          let new_a = pool_input_a_liquidity + provided - protocol_fee
+          let new_a = pool_input_a_liquidity + provided
           let new_b =
             div_ceil(
               pool_input_a_liquidity * pool_input_b_liquidity,
-              pool_input_a_liquidity + provided - swap_fee - protocol_fee,
+              pool_input_a_liquidity + provided - swap_fee,
             )
-          (
-            new_a,
-            new_b,
-            pool_input_datum.a_treasury + protocol_fee,
-            pool_input_datum.b_treasury,
-            pool_input_b_liquidity - new_b,
-          )
+          (new_a, new_b, pool_input_b_liquidity - new_b)
         } else {
           let new_a =
             div_ceil(
               pool_input_b_liquidity * pool_input_a_liquidity,
-              pool_input_b_liquidity + provided - swap_fee - protocol_fee,
+              pool_input_b_liquidity + provided - swap_fee,
             )
-          let new_b = pool_input_b_liquidity + provided - protocol_fee
-          (
-            new_a,
-            new_b,
-            pool_input_datum.a_treasury,
-            pool_input_datum.b_treasury + protocol_fee,
-            pool_input_a_liquidity - new_a,
-          )
-        }
-
-      let is_treasury_correct = and {
-          pool_output_datum.a_treasury == expected_a_treasury,
-          pool_output_datum.b_treasury == expected_b_treasury,
+          let new_b = pool_input_b_liquidity + provided
+          (new_a, new_b, pool_input_a_liquidity - new_a)
         }
 
       let is_pool_value_correct = {
         let a_ada_asset_check =
           if is_ada_pool {
-            as_output == expected_a_liquidity + expected_a_treasury + pool_oil
+            as_output == expected_a_liquidity + pool_oil
           } else {
             and {
-              as_output == expected_a_liquidity + expected_a_treasury,
+              as_output == expected_a_liquidity,
               ada_output >= pool_oil,
             }
           }
 
-        let b_asset_check =
-          bs_output == expected_b_liquidity + expected_b_treasury
+        let b_asset_check = bs_output == expected_b_liquidity
         let shares_asset_check = shares_output == shares_input
         and {
           a_ada_asset_check,
@@ -490,146 +424,52 @@ fn validate_action(
       }
 
       and {
-        is_treasury_correct,
         is_pool_value_correct,
         provided > 0,
         received > 0,
       }
     }
     AddLiquidity { a_add, b_add } -> {
-      let is_treasury_correct = and {
-          pool_output_datum.a_treasury == pool_input_datum.a_treasury,
-          pool_output_datum.b_treasury == pool_input_datum.b_treasury,
-        }
+      let shares_total_emitted = max_share_tokens - shares_input
+      let shares_earned_from_a = a_add * shares_total_emitted / shares_input
+      let shares_earned_from_b = b_add * shares_total_emitted / shares_input
+      let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
+      let expected_shares_output = shares_input - shares_earned
 
-      let is_pool_value_correct = {
-        let shares_total_emitted = max_share_tokens - shares_input
-        let shares_earned_from_a = a_add * shares_total_emitted / shares_input
-        let shares_earned_from_b = b_add * shares_total_emitted / shares_input
-        let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
-        let expected_shares_output = shares_input - shares_earned
-
-        let a_ada_asset_check = and {
-            as_output == as_input + a_add,
-            is_ada_pool || ada_output >= pool_oil,
-          }
-        let b_asset_check = bs_output == bs_input + b_add
-        let shares_asset_check = shares_output == expected_shares_output
-        and {
-          a_ada_asset_check,
-          b_asset_check,
-          shares_asset_check,
-          a_add > 0,
-          b_add > 0,
-          shares_earned > 0,
+      let a_ada_asset_check = and {
+          as_output == as_input + a_add,
+          is_ada_pool || ada_output >= pool_oil,
         }
-      }
+      let b_asset_check = bs_output == bs_input + b_add
+      let shares_asset_check = shares_output == expected_shares_output
       and {
-        is_treasury_correct,
-        is_pool_value_correct,
+        a_ada_asset_check,
+        b_asset_check,
+        shares_asset_check,
+        a_add > 0,
+        b_add > 0,
+        shares_earned > 0,
       }
     }
+
     WithdrawLiquidity { shares_add } -> {
-      let is_treasury_correct = and {
-          pool_output_datum.a_treasury == pool_input_datum.a_treasury,
-          pool_output_datum.b_treasury == pool_input_datum.b_treasury,
-        }
       let shares_total_emitted = max_share_tokens - shares_input
       let a_remove = shares_add * pool_input_a_liquidity / shares_total_emitted
       let b_remove = shares_add * pool_input_b_liquidity / shares_total_emitted
-      let is_pool_value_correct = {
-        let expected_shares_output = shares_input + shares_add
-        let a_ada_asset_check = and {
-            as_output == as_input - a_remove,
-            is_ada_pool || ada_output >= pool_oil,
-          }
-        let b_asset_check = bs_output == bs_input - b_remove
-        let shares_asset_check = shares_output == expected_shares_output
-        and {
-          a_ada_asset_check,
-          b_asset_check,
-          shares_asset_check,
+      let expected_shares_output = shares_input + shares_add
+      let a_ada_asset_check = and {
+          as_output == as_input - a_remove,
+          is_ada_pool || ada_output >= pool_oil,
         }
-      }
+      let b_asset_check = bs_output == bs_input - b_remove
+      let shares_asset_check = shares_output == expected_shares_output
       and {
-        is_treasury_correct,
-        is_pool_value_correct,
+        a_ada_asset_check,
+        b_asset_check,
+        shares_asset_check,
         shares_add > 0,
         a_remove > 0,
         b_remove > 0,
-      }
-    }
-    ExtractTreasury -> {
-      let is_treasury_correct = and {
-          pool_output_datum.a_treasury == 0,
-          pool_output_datum.b_treasury == 0,
-        }
-      let is_value_correct = {
-        let a_ada_asset_check = and {
-            as_output == as_input - pool_output_datum.a_treasury,
-            is_ada_pool || ada_output >= pool_oil,
-          }
-        let b_asset_check = bs_output == bs_input - pool_output_datum.b_treasury
-        let shares_asset_check = shares_input == shares_output
-        and {
-          a_ada_asset_check,
-          b_asset_check,
-          shares_asset_check,
-        }
-      }
-      let is_treasury_output_correct = {
-        expect Some(treasury_output) = list.at(outputs, 1)
-        let is_address_correct =
-          treasury_output.address == pool_input_datum.treasury
-        let is_value_correct = {
-          let as_treasury =
-            quantity_of(
-              treasury_output.value,
-              pool_input_datum.a_policy_id,
-              pool_input_datum.a_asset_name,
-            )
-          let ada_treasury = lovelace_of(treasury_output.value)
-          let bs_treasury =
-            quantity_of(
-              treasury_output.value,
-              pool_input_datum.b_policy_id,
-              pool_input_datum.b_asset_name,
-            )
-          let a_ada_asset_check =
-            if is_ada_pool {
-              as_treasury >= pool_input_datum.a_treasury + treasury_oil
-            } else {
-              and {
-                as_treasury >= pool_input_datum.a_treasury,
-                ada_treasury >= treasury_oil,
-              }
-            }
-          let b_asset_check = bs_treasury >= pool_input_datum.b_treasury
-          // If ada pool: ada + token b; otherwise ada + token a + token b
-          let token_count_check =
-            count_tokens(treasury_output.value) == if is_ada_pool {
-              2
-            } else {
-              3
-            }
-          and {
-            a_ada_asset_check,
-            b_asset_check,
-            token_count_check,
-          }
-        }
-        let is_datum_correct = treasury_output.datum == NoDatum
-        and {
-          is_address_correct,
-          is_value_correct,
-          is_datum_correct,
-        }
-      }
-      and {
-        is_treasury_correct,
-        is_value_correct,
-        pool_input_datum.a_treasury > 0 || pool_input_datum.b_treasury > 0,
-        is_treasury_output_correct,
       }
     }
   }
