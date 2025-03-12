@@ -57,6 +57,7 @@ validator pool {
   //
   // For swaps
   // * Users gets the fair amount of compensation
+  // * User is able to donate to the pool as part of this action
   // * The new A/B values are expected on the pool
   // * The new ada is at least pool oil
   // * The number of shares doesn't change
@@ -399,15 +400,15 @@ fn validate_action(
       let is_pool_value_correct = {
         let a_ada_asset_check =
           if is_ada_pool {
-            as_output == expected_a_liquidity + pool_oil
+            as_output >= expected_a_liquidity + pool_oil
           } else {
             and {
-              as_output == expected_a_liquidity,
+              as_output >= expected_a_liquidity,
               ada_output >= pool_oil,
             }
           }
 
-        let b_asset_check = bs_output == expected_b_liquidity
+        let b_asset_check = bs_output >= expected_b_liquidity
         let shares_asset_check = shares_output == shares_input
         and {
           a_ada_asset_check,
