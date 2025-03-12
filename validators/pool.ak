@@ -413,8 +413,7 @@ fn validate_action(
       and {
         is_treasury_correct,
         is_value_correct,
-        pool_input_datum.a_treasury > 0,
-        pool_input_datum.b_treasury > 0,
+        pool_input_datum.a_treasury > 0 || pool_input_datum.b_treasury > 0,
         is_treasury_output_correct,
       }
     }
