@@ -135,15 +135,15 @@ validator pool {
       expected_pool_token_count(is_ada_pool, pool_shares_output)
     and {
       // Address doesn't change
-      pool_output.address == pool_address,
+      (pool_output.address == pool_address)?,
       // Validity token is present in the input
-      quantity_of(pool_input_value, pool_policy_id, validity_asset_name) == 1,
+      (quantity_of(pool_input_value, pool_policy_id, validity_asset_name) == 1)?,
       // Validity token is preserved in the output
-      quantity_of(pool_output_value, pool_policy_id, validity_asset_name) == 1,
+      (quantity_of(pool_output_value, pool_policy_id, validity_asset_name) == 1)?,
       // Asset A, Asset B, Ada if Asset A != Ada, Shares Asset, Validity Asset
-      count_tokens(pool_output_value) == expected_token_count,
+      (count_tokens(pool_output_value) == expected_token_count)?,
       // Datum is preserved
-      pool_input_datum == pool_output_datum,
+      (pool_input_datum == pool_output_datum)?,
       validate_action(
         pool_redeemer,
         is_ada_pool,
@@ -153,7 +153,7 @@ validator pool {
         pool_output_value,
         pool_ada_output,
         pool_shares_output,
-      ),
+      )?,
     }
   }
 
@@ -220,24 +220,24 @@ validator pool {
 
     let are_assets_fine = and {
         if pool_output_datum.a_policy_id == pool_output_datum.b_policy_id {
-          bytearray.compare(
+          (bytearray.compare(
             pool_output_datum.a_asset_name,
             pool_output_datum.b_asset_name,
-          ) == Less
+          ) == Less)?
         } else {
-          bytearray.compare(
+          (bytearray.compare(
             pool_output_datum.a_policy_id,
             pool_output_datum.b_policy_id,
-          ) == Less
+          ) == Less)?
         },
         // Pools trading shares are allowed
-        pool_output_datum.a_policy_id != pool_hash || and {
-          pool_output_datum.a_asset_name != share_asset_name,
-          pool_output_datum.a_asset_name != validity_asset_name,
+        (pool_output_datum.a_policy_id != pool_hash)? || and {
+          (pool_output_datum.a_asset_name != share_asset_name)?,
+          (pool_output_datum.a_asset_name != validity_asset_name)?,
         },
-        pool_output_datum.b_policy_id != pool_hash || and {
-          pool_output_datum.b_asset_name != share_asset_name,
-          pool_output_datum.b_asset_name != validity_asset_name,
+        (pool_output_datum.b_policy_id != pool_hash)? || and {
+          (pool_output_datum.b_asset_name != share_asset_name)?,
+          (pool_output_datum.b_asset_name != validity_asset_name)?,
         },
       }
 
@@ -277,13 +277,13 @@ validator pool {
         }
 
       and {
-        is_liquidity_correct,
-        as_liquidity_pool > 0,
-        bs_liquidity_pool > 0,
-        ada_pool >= pool_oil,
-        shares_user > 0,
-        token_count == expected_pool_token_count(is_ada_pool, shares_pool),
-        quantity_of(pool_output_value, pool_hash, validity_asset_name) == 1,
+        is_liquidity_correct?,
+        (as_liquidity_pool > 0)?,
+        (bs_liquidity_pool > 0)?,
+        (ada_pool >= pool_oil)?,
+        (shares_user > 0)?,
+        (token_count == expected_pool_token_count(is_ada_pool, shares_pool))?,
+        (quantity_of(pool_output_value, pool_hash, validity_asset_name) == 1)?,
       }
     }
 
@@ -305,9 +305,9 @@ validator pool {
       let share_count = quantity_of(mint, pool_hash, share_asset_name)
       and {
         // pool validity token, share tokens
-        minted == 2,
-        validity_count == 1,
-        share_count == max_share_tokens - burned_share_tokens,
+        (minted == 2)?,
+        (validity_count == 1)?,
+        (share_count == max_share_tokens - burned_share_tokens)?,
       }
     }
 
@@ -315,11 +315,11 @@ validator pool {
       pool_output_datum.shares_asset_name == share_asset_name
 
     and {
-      are_fees_sensible,
-      are_assets_fine,
-      is_pool_value_correct,
-      is_mint_correct,
-      is_share_asset_name_stored,
+      are_fees_sensible?,
+      are_assets_fine?,
+      is_pool_value_correct?,
+      is_mint_correct?,
+      is_share_asset_name_stored?,
     }
   }
 
@@ -405,27 +405,27 @@ fn validate_action(
       let is_pool_value_correct = {
         let a_ada_asset_check =
           if is_ada_pool {
-            as_output >= expected_a_liquidity + pool_oil
+            (as_output >= expected_a_liquidity + pool_oil)?
           } else {
             and {
-              as_output >= expected_a_liquidity,
-              ada_output >= pool_oil,
+              (as_output >= expected_a_liquidity)?,
+              (ada_output >= pool_oil)?,
             }
           }
 
         let b_asset_check = bs_output >= expected_b_liquidity
         let shares_asset_check = shares_output == shares_input
         and {
-          a_ada_asset_check,
-          b_asset_check,
-          shares_asset_check,
+          a_ada_asset_check?,
+          b_asset_check?,
+          shares_asset_check?,
         }
       }
 
       and {
-        is_pool_value_correct,
-        provided > 0,
-        received > 0,
+        is_pool_value_correct?,
+        (provided > 0)?,
+        (received > 0)?,
       }
     }
 
@@ -443,13 +443,13 @@ fn validate_action(
       let ada_check = ada_output >= pool_oil
       let shares_asset_check = shares_output == expected_shares_output
       and {
-        a_asset_check,
-        b_asset_check,
-        ada_check,
-        shares_asset_check,
-        a_add > 0,
-        b_add > 0,
-        shares_earned > 0,
+        a_asset_check?,
+        b_asset_check?,
+        ada_check?,
+        shares_asset_check?,
+        (a_add > 0)?,
+        (b_add > 0)?,
+        (shares_earned > 0)?,
       }
     }
 
@@ -463,21 +463,21 @@ fn validate_action(
       let b_asset_check = bs_output == bs_input - b_remove
       let shares_asset_check = shares_output == expected_shares_output
       and {
-        a_asset_check,
-        ada_check,
-        b_asset_check,
-        shares_asset_check,
-        shares_add > 0,
-        a_remove > 0,
-        b_remove > 0,
+        a_asset_check?,
+        ada_check?,
+        b_asset_check?,
+        shares_asset_check?,
+        (shares_add > 0)?,
+        (a_remove > 0)?,
+        (b_remove > 0)?,
       }
     }
 
     Donate -> and {
-        ada_output >= lovelace_of(pool_input_value),
-        as_output >= as_input,
-        bs_output >= bs_input,
-        shares_output == shares_input,
+        (ada_output >= lovelace_of(pool_input_value))?,
+        (as_output >= as_input)?,
+        (bs_output >= bs_input)?,
+        (shares_output == shares_input)?,
       }
   }
 }
