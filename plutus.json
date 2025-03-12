@@ -1,0 +1,65 @@
+{
+  "preamble": {
+    "title": "wingriders/rapid-dex",
+    "description": "Aiken contracts for project 'wingriders/rapid-dex'",
+    "version": "0.0.0",
+    "plutusVersion": "v3",
+    "compiler": {
+      "name": "Aiken",
+      "version": "v1.1.9+2217206"
+    },
+    "license": "Apache-2.0"
+  },
+  "validators": [
+    {
+      "title": "pool.pool.spend",
+      "datum": {
+        "title": "_datum",
+        "schema": {
+          "$ref": "#/definitions/Data"
+        }
+      },
+      "redeemer": {
+        "title": "_redeemer",
+        "schema": {
+          "$ref": "#/definitions/Data"
+        }
+      },
+      "compiledCode": "5856010100323232323225333002323232323253330073370e900118041baa00113233226300b001300b300c001300937540022c601260140066010004600e004600e00260086ea8004526136565734aae7555cf2ba15745",
+      "hash": "7aff04631f4532cc06951ffb5ed7babfdc6206838832207bd8e38190"
+    },
+    {
+      "title": "pool.pool.else",
+      "redeemer": {
+        "schema": {}
+      },
+      "compiledCode": "5856010100323232323225333002323232323253330073370e900118041baa00113233226300b001300b300c001300937540022c601260140066010004600e004600e00260086ea8004526136565734aae7555cf2ba15745",
+      "hash": "7aff04631f4532cc06951ffb5ed7babfdc6206838832207bd8e38190"
+    },
+    {
+      "title": "validity.validity.mint",
+      "redeemer": {
+        "title": "_redeemer",
+        "schema": {
+          "$ref": "#/definitions/Data"
+        }
+      },
+      "compiledCode": "584f010100323232323225333002323232323253330073370e900018041baa0011326375c601460126ea800458c024c02800cc020008c01c008c01c004c010dd50008a4c26cacae6955ceaab9e5742ae89",
+      "hash": "3e253e28e9c38a4fcc594ca3301bd2b3496df581140a690b4a95a28e"
+    },
+    {
+      "title": "validity.validity.else",
+      "redeemer": {
+        "schema": {}
+      },
+      "compiledCode": "584f010100323232323225333002323232323253330073370e900018041baa0011326375c601460126ea800458c024c02800cc020008c01c008c01c004c010dd50008a4c26cacae6955ceaab9e5742ae89",
+      "hash": "3e253e28e9c38a4fcc594ca3301bd2b3496df581140a690b4a95a28e"
+    }
+  ],
+  "definitions": {
+    "Data": {
+      "title": "Data",
+      "description": "Any Plutus data."
+    }
+  }
+}
