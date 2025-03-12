@@ -73,13 +73,13 @@ validator pool {
     expect [_] =
       list.filter(
         transaction.inputs,
-        fn(i) { is_address_with_script_hash(i.output.address, pool_hash) },
+        fn(i) { has_script_hash(i.output.address, pool_hash) },
       )
     // One pool output
     expect [pool_output] =
       list.filter(
         transaction.outputs,
-        fn(output) { is_address_with_script_hash(output.address, pool_hash) },
+        fn(output) { has_script_hash(output.address, pool_hash) },
       )
     // New pool datum is inline
     expect InlineDatum(pool_output_datum_inline) = pool_output.datum
@@ -362,10 +362,7 @@ fn validate_action(
   }
 }
 
-fn is_address_with_script_hash(
-  address: Address,
-  script_hash: ScriptHash,
-) -> Bool {
+fn has_script_hash(address: Address, script_hash: ScriptHash) -> Bool {
   when address.payment_credential is {
     Script(hash) -> script_hash == hash
     VerificationKey(_) -> False
