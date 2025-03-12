@@ -143,13 +143,7 @@ validator pool {
       // Asset A, Asset B, Ada if Asset A != Ada, Shares Asset, Validity Asset
       count_tokens(pool_output_value) == expected_token_count,
       // Datum is preserved
-      pool_input_datum.a_policy_id == pool_output_datum.a_policy_id,
-      pool_input_datum.a_asset_name == pool_output_datum.a_asset_name,
-      pool_input_datum.b_policy_id == pool_output_datum.b_policy_id,
-      pool_input_datum.b_asset_name == pool_output_datum.b_asset_name,
-      pool_input_datum.swap_fee_points == pool_output_datum.swap_fee_points,
-      pool_input_datum.fee_basis == pool_output_datum.fee_basis,
-      pool_input_datum.shares_asset_name == pool_output_datum.shares_asset_name,
+      pool_input_datum == pool_output_datum,
       validate_action(
         pool_redeemer,
         is_ada_pool,
