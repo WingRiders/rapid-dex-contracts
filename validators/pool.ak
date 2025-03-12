@@ -1,6 +1,7 @@
 use aiken/collection/list
 use aiken/crypto.{ScriptHash}
 use aiken/math.{min}
+use aiken/primitive/bytearray
 use cardano/address.{Address, Script, VerificationKey}
 use cardano/assets.{
   AssetName, PolicyId, Value, ada_policy_id, lovelace_of, quantity_of,
@@ -24,8 +25,6 @@ type PoolDatum {
   shares_asset_name: AssetName,
 }
 
-// TODO: figure out how to prevent redeeming shares with a different pool
-//       -> share asset name must be unique and set by the minting policy based on a utxo ref
 type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
   AddLiquidity { a_add: Int, b_add: Int }
@@ -43,6 +42,10 @@ const treasury_oil = 2_000_000
 
 const max_share_tokens = 9_223_372_036_854_775_807
 
+// Amount of shares to be burned upon new pool creation.
+// The value is the same as in Uniswap v2 [https://uniswap.org/whitepaper.pdf]
+const burned_share_tokens = 1_000
+
 validator pool {
   // * There is 1 pool input
   // * There is 1 pool output
@@ -57,7 +60,8 @@ validator pool {
   // * The new A/B values are expected
   // * The new ada is at least pool oil
   // * The shares don't change
-  // * The swap provides at least some tokens; REVIEW: check received > 0?
+  // * The swap provides at least some tokens
+  // * REVIEW: User received at least some tokens
   // * The swap fee is collected into the pool value
   // * The protocol fee is collected into the pool value and tracked in treasuries
   //
@@ -176,14 +180,149 @@ validator pool {
     }
   }
 
-  // * one pool output with one validity token and shares
-  // * shares are correctly distributed
-  // * no pool inputs
+  // REVIEW: Do we need to check that there are no pool inputs?
+  // 
+  // * the output index of the first input (seed) fits into a byte
+  // * one pool output with one validity token and shares and correct address/value
+  // * the pool has datum inline
   // * 0% <= fees <= 100%
   // * assets are different and sorted
   // * treasuries are 0
-  mint(_redeemer: Data, _policy_id: PolicyId, _tx: Transaction) {
-    todo @"mint logic goes here"
+  // * check minted/burned tokens
+  mint(_redeemer: Data, policy_id: PolicyId, transaction: Transaction) {
+    let pool_hash = policy_id
+    // One pool output
+    expect [pool_output] =
+      list.filter(
+        transaction.outputs,
+        fn(output) { has_script_hash(output.address, pool_hash) },
+      )
+    // The pool datum is inline
+    expect InlineDatum(pool_output_datum_inline) = pool_output.datum
+    expect pool_output_datum: PoolDatum = pool_output_datum_inline
+
+    let are_fees_sensible = and {
+        pool_output_datum.swap_fee_points >= 0,
+        pool_output_datum.protocol_fee_points >= 0,
+        pool_output_datum.swap_fee_points + pool_output_datum.protocol_fee_points <= pool_output_datum.fee_basis,
+      }
+
+    expect Some(seed) = list.at(transaction.inputs, 0)
+    let share_asset_name =
+      bytearray.concat(
+        seed.output_reference.transaction_id,
+        bytearray.from_int_little_endian(seed.output_reference.output_index, 1),
+      )
+
+    let are_assets_fine = and {
+        if pool_output_datum.a_policy_id == pool_output_datum.b_policy_id {
+          bytearray.compare(
+            pool_output_datum.a_asset_name,
+            pool_output_datum.b_asset_name,
+          ) == Less
+        } else {
+          bytearray.compare(
+            pool_output_datum.a_policy_id,
+            pool_output_datum.b_policy_id,
+          ) == Less
+        },
+        // We do allow pools trading shares
+        pool_output_datum.a_policy_id != pool_hash || and {
+          pool_output_datum.a_asset_name != share_asset_name,
+          pool_output_datum.a_asset_name != validity_asset_name,
+        },
+        pool_output_datum.b_policy_id != pool_hash || and {
+          pool_output_datum.b_asset_name != share_asset_name,
+          pool_output_datum.b_asset_name != validity_asset_name,
+        },
+      }
+
+    let are_treasuries_empty = and {
+        pool_output_datum.a_treasury == 0,
+        pool_output_datum.b_treasury == 0,
+      }
+
+    let is_value_correct = {
+      let pool_output_value = pool_output.value
+
+      let token_count = count_tokens(pool_output_value)
+
+      let is_ada_pool = pool_output_datum.a_policy_id == ada_policy_id
+      let ada_pool = lovelace_of(pool_output_value)
+      let as_liquidity_pool =
+        if is_ada_pool {
+          ada_pool - pool_oil
+        } else {
+          quantity_of(
+            pool_output_value,
+            pool_output_datum.a_policy_id,
+            pool_output_datum.a_asset_name,
+          )
+        }
+      let bs_liquidity_pool =
+        quantity_of(
+          pool_output_value,
+          pool_output_datum.b_policy_id,
+          pool_output_datum.b_asset_name,
+        )
+      let shares_pool =
+        quantity_of(pool_output_value, pool_hash, share_asset_name)
+
+      let shares_total_emitted = max_share_tokens - shares_pool
+      let shares_total_emitted_plus_1 = shares_total_emitted + 1
+      let shares_user = shares_total_emitted - burned_share_tokens
+      let out_ab = as_liquidity_pool * bs_liquidity_pool
+      let is_liquidity_correct = and {
+          shares_total_emitted * shares_total_emitted <= out_ab,
+          shares_total_emitted_plus_1 * shares_total_emitted_plus_1 > out_ab,
+        }
+
+      and {
+        is_liquidity_correct,
+        as_liquidity_pool > 0,
+        bs_liquidity_pool > 0,
+        ada_pool >= pool_oil,
+        shares_user > 0,
+        token_count == if is_ada_pool {
+          4
+        } else {
+          5
+        },
+        quantity_of(pool_output_value, pool_hash, validity_asset_name) == 1,
+      }
+    }
+
+    let is_mint_correct = {
+      let mint = transaction.mint
+      let minted =
+        assets.reduce(
+          mint,
+          0,
+          fn(policy, _, _, acc) {
+            if policy == pool_hash {
+              acc + 1
+            } else {
+              acc
+            }
+          },
+        )
+      let validity_count = quantity_of(mint, pool_hash, validity_asset_name)
+      let share_count = quantity_of(mint, pool_hash, share_asset_name)
+      and {
+        // pool validity token, share tokens
+        minted == 2,
+        validity_count == 1,
+        share_count == max_share_tokens - burned_share_tokens,
+      }
+    }
+
+    and {
+      are_fees_sensible,
+      are_assets_fine,
+      are_treasuries_empty,
+      is_value_correct,
+      is_mint_correct,
+    }
   }
 
   else(_) {
@@ -345,7 +484,6 @@ fn validate_action(
         is_value_correct,
       }
     }
-    // TODO: recheck if value calculations are correct and sufficient here and in other branches
     WithdrawLiquidity { shares_add } -> {
       let is_treasury_correct = and {
           pool_output_datum.a_treasury == pool_input_datum.a_treasury,
