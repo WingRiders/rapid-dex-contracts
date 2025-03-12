@@ -29,7 +29,7 @@ type PoolRedeemer {
   AddLiquidity { a_add: Int, b_add: Int }
   WithdrawLiquidity { shares_add: Int }
   // REVIEW: allow changing the staking credentials and the treasury address?
-  //         have an authority token/key?
+  //         have an authority token/key for this?
   ExtractTreasury
 }
 
@@ -41,7 +41,6 @@ const treasury_oil = 2_000_000
 
 const max_share_tokens = 9_223_372_036_854_775_807
 
-// TODO: additional checks for scenarios like min required swaps
 validator pool {
   // * There is 1 pool input
   // * There is 1 pool output
@@ -53,12 +52,42 @@ validator pool {
   //
   // For swaps
   // * The invariant is preserved
-  // * The swap fee is collected
-  // * The protocol fee is collected
+  // * The new A/B values are expected
+  // * The new ada is at least pool oil
+  // * The shares don't change
+  // * The swap provides at least some tokens; REVIEW: check received > 0?
+  // * The swap fee is collected into the pool value
+  // * The protocol fee is collected into the pool value and tracked in treasuries
   //
-  // TODO: documentation
   // For add liquidity
-  // * 
+  // * The invariant is preserved
+  // * The new A/B values include the provided tokens
+  // * The new ada is at least pool oil
+  // * The new shares are expected
+  // * User provides at least some tokens
+  // * REVIEW: User receives at least some shares
+  // * Treasuries don't change
+  //
+  // For withdraw liquidity
+  // * The invariant is preserved
+  // * The new A/B values don't have the returned tokens
+  // * The new ada is at least pool oil
+  // * The new shares are expected
+  // * User provides at least some shares
+  // * REVIEW: User receives at least some A or B tokens
+  // * Treasuries don't change
+  //
+  // For extract treasury:
+  // * The new A/B values don't include the treasuries
+  // * The new ada is at least pool oil
+  // * The new treasuries are 0
+  // * At least one of the old treasuries is bigger that zero
+  // * The second transaction output is a treasury output that
+  //   goes to the treasury address
+  //   has no datum
+  //   has 2 or 3 tokens depending on whether the pool swaps ada
+  //   has at least treasury oil ada
+  //   contains the pool treasury value
   spend(
     datum: Option<Data>,
     redeemer: Data,
