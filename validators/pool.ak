@@ -426,8 +426,10 @@ fn validate_action(
 
     AddLiquidity { a_add, b_add } -> {
       let shares_total_emitted = max_share_tokens - shares_input
-      let shares_earned_from_a = a_add * shares_total_emitted / shares_input
-      let shares_earned_from_b = b_add * shares_total_emitted / shares_input
+      let shares_earned_from_a =
+        a_add * shares_total_emitted / pool_input_a_liquidity
+      let shares_earned_from_b =
+        b_add * shares_total_emitted / pool_input_b_liquidity
       let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
       let expected_shares_output = shares_input - shares_earned
 
