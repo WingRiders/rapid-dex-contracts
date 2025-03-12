@@ -61,7 +61,7 @@ validator pool {
   // * The new ada is at least pool oil
   // * The shares don't change
   // * The swap provides at least some tokens
-  // * REVIEW: User received at least some tokens
+  // * REVIEW: User receives at least some tokens
   // * The swap fee is collected into the pool value
   // * The protocol fee is collected into the pool value and tracked in treasuries
   //
@@ -395,6 +395,7 @@ fn validate_action(
         expected_b_liquidity,
         expected_a_treasury,
         expected_b_treasury,
+        received,
       ) =
         if swap_a_to_b {
           let new_a = pool_input_a_liquidity + provided - protocol_fee
@@ -408,6 +409,7 @@ fn validate_action(
             new_b,
             pool_input_datum.a_treasury + protocol_fee,
             pool_input_datum.b_treasury,
+            pool_input_b_liquidity - new_b,
           )
         } else {
           let new_a =
@@ -421,6 +423,7 @@ fn validate_action(
             new_b,
             pool_input_datum.a_treasury,
             pool_input_datum.b_treasury + protocol_fee,
+            pool_input_a_liquidity - new_a,
           )
         }
 
@@ -442,13 +445,14 @@ fn validate_action(
           a_ada_asset_check,
           b_asset_check,
           shares_asset_check,
-          provided > 0,
         }
       }
 
       and {
         is_treasury_correct,
         is_value_correct,
+        provided > 0,
+        received > 0,
       }
     }
     AddLiquidity { a_add, b_add } -> {
