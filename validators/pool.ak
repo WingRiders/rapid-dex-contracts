@@ -37,7 +37,7 @@ const burned_share_tokens = 1_000
 
 // NOTE: if you integrate some other script with this contract,
 //       make sure to handle possible double satisfaction attacks;
-//       this contract doesn't restrict the number of pool inputs/outputs,
+//       this contract doesn't restrict the number of script inputs/outputs,
 //       only the number of input/output pools
 //
 validator pool {
