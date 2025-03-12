@@ -101,7 +101,7 @@ validator pool {
       list.find(transaction.inputs, fn(i) { i.output_reference == pool_ref })
     let pool_address = pool_input.output.address
     expect Script(pool_hash) = pool_address.payment_credential
-    let validity_policy_id = pool_hash
+    let pool_policy_id = pool_hash
     // One pool input
     expect [_] =
       list.filter(
@@ -125,7 +125,7 @@ validator pool {
     let pool_shares_output =
       quantity_of(
         pool_output_value,
-        validity_policy_id,
+        pool_policy_id,
         pool_input_datum.shares_asset_name,
       )
     let pool_ada_output = lovelace_of(pool_output_value)
@@ -136,9 +136,9 @@ validator pool {
       // Address doesn't change
       pool_output.address == pool_address,
       // Validity token is present in the input
-      quantity_of(pool_input_value, validity_policy_id, validity_asset_name) == 1,
+      quantity_of(pool_input_value, pool_policy_id, validity_asset_name) == 1,
       // Validity token is preserved in the output
-      quantity_of(pool_output_value, validity_policy_id, validity_asset_name) == 1,
+      quantity_of(pool_output_value, pool_policy_id, validity_asset_name) == 1,
       // Asset A, Asset B, Ada if Asset A != Ada, Shares Asset, Validity Asset
       count_tokens(pool_output_value) == expected_token_count,
       // Datum is preserved
@@ -146,7 +146,7 @@ validator pool {
       validate_action(
         pool_redeemer,
         is_ada_pool,
-        validity_policy_id,
+        pool_policy_id,
         pool_input_datum,
         pool_input_value,
         pool_output_value,
@@ -325,7 +325,7 @@ validator pool {
 fn validate_action(
   pool_redeemer: PoolRedeemer,
   is_ada_pool: Bool,
-  validity_policy_id: PolicyId,
+  pool_policy_id: PolicyId,
   pool_input_datum: PoolDatum,
   pool_input_value: Value,
   pool_output_value: Value,
@@ -347,7 +347,7 @@ fn validate_action(
   let shares_input =
     quantity_of(
       pool_input_value,
-      validity_policy_id,
+      pool_policy_id,
       pool_input_datum.shares_asset_name,
     )
   let as_output =
