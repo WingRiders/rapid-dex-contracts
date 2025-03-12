@@ -18,7 +18,7 @@ type PoolDatum {
   swap_fee_points: Int,
   protocol_fee_points: Int,
   fee_basis: Int,
-  lovelace_fee: Int,
+  // TODO: remove treasuries
   a_treasury: Int,
   b_treasury: Int,
   treasury: Address,
@@ -44,46 +44,66 @@ const max_share_tokens = 9_223_372_036_854_775_807
 // The value is the same as in Uniswap v2 [https://uniswap.org/whitepaper.pdf]
 const burned_share_tokens = 1_000
 
+// NOTE: if you integrate some other script with this contract,
+//       make sure to handle possible double satisfaction attacks;
+//       this contract doesn't restrict the number of pool inputs/outputs,
+//       only the number of input/output pools
+//
 validator pool {
   // * There is 1 pool input
   // * There is 1 pool output
   // * The old pool has a validity token
-  // * The new pool datum's inline
   // * The new pool has a validity token
+  // * The new pool datum's inline
   // * The pool address stays the same
   // * The new pool has the correct number of tokens
+  // * The pool datum fields stay the same
+  //
+  // NOTE: the contract doesn't check user compensations directly
+  //       but only the pool values;
+  //       it is assumed the users takes the compensations wherever they choose to
+  //       as the pool only offers direct interactions without request intermediaries
   //
   // For swaps
-  // * The invariant is preserved
-  // * The new A/B values are expected
+  // * Users gets the fair amount of compensation
+  // * The new A/B values are expected on the pool
   // * The new ada is at least pool oil
-  // * The shares don't change
+  // * The number of shares doesn't change
   // * The swap provides at least some tokens
-  // * REVIEW: User receives at least some tokens
+  // * User receives at least some tokens NOTE: increasing the min swap to make it harder to block the pool
   // * The swap fee is collected into the pool value
   // * The protocol fee is collected into the pool value and tracked in treasuries
   //
   // For add liquidity
-  // * The invariant is preserved
-  // * The new A/B values include the provided tokens
-  // * The new ada is at least pool oil
-  // * The new shares are expected
+  // * Users gets the fair amount of compensation in shares
+  // * The new pool A/B values include the provided tokens
+  // * The new pool ada is at least pool oil
+  // * The new pool shares are expected on the pool output value
   // * User provides at least some tokens
-  // * REVIEW: User receives at least some shares
+  // * User receives at least some shares
   // * Treasuries don't change
+  //
+  // NOTE: earned shares are determined as min(earned shares from added a, earned shares from added b)
+  //       that means it's possible to donate liquidity into the pool.
+  //
+  // NOTE: provided A and B are taken from the redeemer and are assumed to be fully added into the pool
+  //       strict equality is used for the pool value checks
   //
   // For withdraw liquidity
-  // * The invariant is preserved
-  // * The new A/B values don't have the returned tokens
-  // * The new ada is at least pool oil
-  // * The new shares are expected
+  // * Users gets the fair amount of compensation in a/b tokens
+  // * The new pool A/B values don't have the returned tokens
+  // * The new pool ada is at least pool oil
+  // * The new shares are expected on the pool output value
   // * User provides at least some shares
-  // * REVIEW: User receives at least some A or B tokens
+  // * User receives at least some A and B tokens
   // * Treasuries don't change
   //
+  // NOTE: redeemed shares are taken from the redeemer and are assumed to be fully added into the pool
+  //       strict equality is used for the pool value checks
+  //
   // For extract treasury:
-  // * The new A/B values don't include the treasuries
-  // * The new ada is at least pool oil
+  // * The new A/B values don't include the treasuries // TODO: probably don't need this
+  // * The new ada in the pool is at least pool oil
   // * The new treasuries are 0
   // * At least one of the old treasuries is bigger that zero
   // * The second transaction output is a treasury output that
@@ -92,6 +112,8 @@ validator pool {
   //   has 2 or 3 tokens depending on whether the pool swaps ada
   //   has at least treasury oil ada
   //   contains the pool treasury value
+  //
+  // TODO: Donate redeemer
   spend(
     datum: Option<Data>,
     redeemer: Data,
@@ -126,16 +148,16 @@ validator pool {
     let pool_output_value = pool_output.value
     let is_ada_pool = pool_input_datum.a_policy_id == ada_policy_id
 
-    let shares_output =
+    let pool_shares_output =
       quantity_of(
         pool_output_value,
         validity_policy_id,
         pool_input_datum.shares_asset_name,
       )
-    let ada_output = lovelace_of(pool_output_value)
+    let pool_ada_output = lovelace_of(pool_output_value)
 
     let expected_token_count =
-      expected_pool_token_count(is_ada_pool, shares_output)
+      expected_pool_token_count(is_ada_pool, pool_shares_output)
     and {
       // Address doesn't change
       pool_output.address == pool_address,
@@ -153,32 +175,56 @@ validator pool {
       pool_input_datum.swap_fee_points == pool_output_datum.swap_fee_points,
       pool_input_datum.protocol_fee_points == pool_output_datum.protocol_fee_points,
       pool_input_datum.fee_basis == pool_output_datum.fee_basis,
-      pool_input_datum.lovelace_fee == pool_output_datum.lovelace_fee,
       pool_input_datum.treasury == pool_output_datum.treasury,
+      pool_input_datum.shares_asset_name == pool_output_datum.shares_asset_name,
       validate_action(
+        pool_redeemer,
         transaction.outputs,
         is_ada_pool,
         validity_policy_id,
-        pool_redeemer,
         pool_input_datum,
         pool_input_value,
         pool_output_datum,
         pool_output_value,
-        ada_output,
-        shares_output,
+        pool_ada_output,
+        pool_shares_output,
       ),
     }
   }
 
-  // REVIEW: Do we need to check that there are no pool inputs?
+  // NOTE: the contract doesn't check user compensations directly
+  //       but only the pool and mint values
+  //       it is assumed the users takes the compensations wherever they choose to
+  //
+  // NOTE: the policy mints max shares - burned shares
+  //       for more details read https://uniswap.org/whitepaper.pdf section 3.4
   // 
-  // * the output index of the first input (seed) fits into a byte
-  // * one pool output with one validity token and shares and correct address/value
+  // * the user gets at least some shares
+  // * total emitted shares = sqrt (liquidity a * liquidity b)
+  //   => total emitted shares ^ 2 <= liquidity a * liquidity b
+  //      (total emitted shares + 1) ^ 2 > liquidity a * liquidity b
+  //   total emitted shares are inferred as max shares constant - pool output shares
+  // * user gets total emitted shares - burned shares
+  // * one output on the pool address with one validity token and shares and correct value
+  // * the pool has 1 validity token
+  // * the pool has at least pool oil ada
+  // * the pool has positive A liquidity (disregarding oil for ada pools)
+  // * the pool has positive B liquidity
+  // * the pool has the expected number of tokens (a + b + ada if a != ada + shares + validity)
   // * the pool has datum inline
   // * 0% <= fees <= 100%
-  // * assets are different and sorted
+  // * assets are different and sorted, and don't overlap with validity token or shares
   // * treasuries are 0
-  // * check minted/burned tokens
+  // * two different tokens with the pool policy id are minted
+  // * 1 pool validity token is minted
+  //   (validity token policy id is pool script hash)
+  //   (validity token asset name is a constant)
+  // * the output index of the first input (seed) fits into a byte
+  // * max share tokens - burned share tokens are minted
+  //   (share policy id is pool script hash)
+  //   (share asset name is seed's utxo ref's tx id <> output index)
+  // * share asset name is constructed from the seed output ref
+  // * share asset name is stored in the datum
   mint(_redeemer: Data, policy_id: PolicyId, transaction: Transaction) {
     let pool_hash = policy_id
     // One pool output
@@ -216,7 +262,7 @@ validator pool {
             pool_output_datum.b_policy_id,
           ) == Less
         },
-        // We do allow pools trading shares
+        // Pools trading shares are allowed
         pool_output_datum.a_policy_id != pool_hash || and {
           pool_output_datum.a_asset_name != share_asset_name,
           pool_output_datum.a_asset_name != validity_asset_name,
@@ -232,7 +278,7 @@ validator pool {
         pool_output_datum.b_treasury == 0,
       }
 
-    let is_value_correct = {
+    let is_pool_value_correct = {
       let pool_output_value = pool_output.value
 
       let token_count = count_tokens(pool_output_value)
@@ -261,10 +307,10 @@ validator pool {
       let shares_total_emitted = max_share_tokens - shares_pool
       let shares_total_emitted_plus_1 = shares_total_emitted + 1
       let shares_user = shares_total_emitted - burned_share_tokens
-      let out_ab = as_liquidity_pool * bs_liquidity_pool
+      let ab_out = as_liquidity_pool * bs_liquidity_pool
       let is_liquidity_correct = and {
-          shares_total_emitted * shares_total_emitted <= out_ab,
-          shares_total_emitted_plus_1 * shares_total_emitted_plus_1 > out_ab,
+          shares_total_emitted * shares_total_emitted <= ab_out,
+          shares_total_emitted_plus_1 * shares_total_emitted_plus_1 > ab_out,
         }
 
       and {
@@ -302,12 +348,16 @@ validator pool {
       }
     }
 
+    let is_share_asset_name_stored =
+      pool_output_datum.shares_asset_name == share_asset_name
+
     and {
       are_fees_sensible,
       are_assets_fine,
       are_treasuries_empty,
-      is_value_correct,
+      is_pool_value_correct,
       is_mint_correct,
+      is_share_asset_name_stored,
     }
   }
 
@@ -317,10 +367,10 @@ validator pool {
 }
 
 fn validate_action(
+  pool_redeemer: PoolRedeemer,
   outputs: List<Output>,
   is_ada_pool: Bool,
   validity_policy_id: PolicyId,
-  pool_redeemer: PoolRedeemer,
   pool_input_datum: PoolDatum,
   pool_input_value: Value,
   pool_output_datum: PoolDatum,
@@ -418,10 +468,15 @@ fn validate_action(
           pool_output_datum.b_treasury == expected_b_treasury,
         }
 
-      let is_value_correct = {
-        let a_ada_asset_check = and {
-            as_output == expected_a_liquidity + expected_a_treasury + pool_oil,
-            is_ada_pool || ada_output >= pool_oil,
+      let is_pool_value_correct = {
+        let a_ada_asset_check =
+          if is_ada_pool {
+            as_output == expected_a_liquidity + expected_a_treasury + pool_oil
+          } else {
+            and {
+              as_output == expected_a_liquidity + expected_a_treasury,
+              ada_output >= pool_oil,
+            }
           }
 
         let b_asset_check =
@@ -436,7 +491,7 @@ fn validate_action(
 
       and {
         is_treasury_correct,
-        is_value_correct,
+        is_pool_value_correct,
         provided > 0,
         received > 0,
       }
@@ -447,7 +502,7 @@ fn validate_action(
           pool_output_datum.b_treasury == pool_input_datum.b_treasury,
         }
 
-      let is_value_correct = {
+      let is_pool_value_correct = {
         let shares_total_emitted = max_share_tokens - shares_input
         let shares_earned_from_a = a_add * shares_total_emitted / shares_input
         let shares_earned_from_b = b_add * shares_total_emitted / shares_input
@@ -471,7 +526,7 @@ fn validate_action(
       }
       and {
         is_treasury_correct,
-        is_value_correct,
+        is_pool_value_correct,
       }
     }
     WithdrawLiquidity { shares_add } -> {
@@ -482,7 +537,7 @@ fn validate_action(
       let shares_total_emitted = max_share_tokens - shares_input
       let a_remove = shares_add * pool_input_a_liquidity / shares_total_emitted
       let b_remove = shares_add * pool_input_b_liquidity / shares_total_emitted
-      let is_value_correct = {
+      let is_pool_value_correct = {
         let expected_shares_output = shares_input + shares_add
         let a_ada_asset_check = and {
             as_output == as_input - a_remove,
@@ -498,9 +553,10 @@ fn validate_action(
       }
       and {
         is_treasury_correct,
-        is_value_correct,
+        is_pool_value_correct,
         shares_add > 0,
-        a_remove > 0 || b_remove > 0,
+        a_remove > 0,
+        b_remove > 0,
       }
     }
     ExtractTreasury -> {
@@ -598,6 +654,8 @@ fn div_ceil(a: Int, b: Int) -> Int {
   }
 }
 
+// Asset A + Asset B + Ada if Asset A != Ada + Shares Asset + Validity Asset
+// Shares can potentially be 0.
 fn expected_pool_token_count(is_ada_pool: Bool, share_count: Int) -> Int {
   if is_ada_pool {
     4
