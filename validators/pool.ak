@@ -2,7 +2,9 @@ use aiken/collection/list
 use aiken/crypto.{ScriptHash}
 use aiken/math.{min}
 use cardano/address.{Address, Script, VerificationKey}
-use cardano/assets.{AssetName, PolicyId, Value, quantity_of}
+use cardano/assets.{
+  AssetName, PolicyId, Value, ada_policy_id, lovelace_of, quantity_of,
+}
 use cardano/transaction.{
   InlineDatum, NoDatum, Output, OutputReference, Transaction,
 }
@@ -120,7 +122,7 @@ validator pool {
 
     let pool_input_value = pool_input.output.value
     let pool_output_value = pool_output.value
-    let is_ada_pool = pool_input_datum.a_policy_id == ""
+    let is_ada_pool = pool_input_datum.a_policy_id == ada_policy_id
 
     let shares_output =
       quantity_of(
@@ -128,7 +130,7 @@ validator pool {
         validity_policy_id,
         pool_input_datum.shares_asset_name,
       )
-    let ada_output = quantity_of(pool_output_value, "", "")
+    let ada_output = lovelace_of(pool_output_value)
 
     let expected_token_count =
       if is_ada_pool {
@@ -402,7 +404,7 @@ fn validate_action(
               pool_input_datum.a_policy_id,
               pool_input_datum.a_asset_name,
             )
-          let ada_treasury = quantity_of(treasury_output.value, "", "")
+          let ada_treasury = lovelace_of(treasury_output.value)
           let bs_treasury =
             quantity_of(
               treasury_output.value,
