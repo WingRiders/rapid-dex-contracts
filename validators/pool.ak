@@ -1,5 +1,5 @@
 use aiken/collection/list
-use aiken/crypto.{ScriptHash}
+use aiken/crypto.{ScriptHash, blake2b_256}
 use aiken/math.{min}
 use aiken/primitive/bytearray
 use cardano/address.{Address, Script, VerificationKey}
@@ -186,7 +186,7 @@ validator pool {
   // * the output index of the first input (seed) fits into a byte
   // * max share tokens - burned share tokens are minted
   //   (share policy id is pool script hash)
-  //   (share asset name is seed's utxo ref's tx id <> output index)
+  //   (share asset name is blake2b_256 [seed's utxo ref's tx id <> output index])
   // * share asset name is constructed from the seed output ref
   // * share asset name is stored in the datum
   mint(_redeemer: Data, policy_id: PolicyId, transaction: Transaction) {
@@ -208,9 +208,14 @@ validator pool {
 
     expect Some(seed) = list.at(transaction.inputs, 0)
     let share_asset_name =
-      bytearray.concat(
-        seed.output_reference.transaction_id,
-        bytearray.from_int_little_endian(seed.output_reference.output_index, 1),
+      blake2b_256(
+        bytearray.concat(
+          seed.output_reference.transaction_id,
+          bytearray.from_int_little_endian(
+            seed.output_reference.output_index,
+            1,
+          ),
+        ),
       )
 
     let are_assets_fine = and {
