@@ -25,6 +25,10 @@ type PoolRedeemer {
   Donate
 }
 
+type MintRedeemer {
+  seed_ref: OutputReference,
+}
+
 const validity_asset_name = "P"
 
 const pool_oil = 2_000_000
@@ -163,7 +167,7 @@ validator pool {
   //
   // NOTE: the policy mints max shares - burned shares
   //       for more details read https://uniswap.org/whitepaper.pdf section 3.4
-  // 
+  //
   // * the user gets at least some shares
   // * total emitted shares = sqrt (liquidity a * liquidity b)
   //   => total emitted shares ^ 2 <= liquidity a * liquidity b
@@ -183,13 +187,15 @@ validator pool {
   // * 1 pool validity token is minted
   //   (validity token policy id is pool script hash)
   //   (validity token asset name is a constant)
-  // * the output index of the first input (seed) fits into a byte
+  // * seed utxo ref is passed in the redeemer
+  // * seed is spent (is included in inputs)
+  // * the output index of the seed fits into a byte
   // * max share tokens - burned share tokens are minted
   //   (share policy id is pool script hash)
   //   (share asset name is blake2b_256 [seed's utxo ref's tx id <> output index])
   // * share asset name is constructed from the seed output ref
   // * share asset name is stored in the datum
-  mint(_redeemer: Data, policy_id: PolicyId, transaction: Transaction) {
+  mint(redeemer: Data, policy_id: PolicyId, transaction: Transaction) {
     let pool_hash = policy_id
     // One pool output
     expect [pool_output] =
@@ -206,13 +212,13 @@ validator pool {
         pool_output_datum.swap_fee_points <= pool_output_datum.fee_basis,
       }
 
-    expect Some(seed) = list.at(transaction.inputs, 0)
+    expect mint_redeemer: MintRedeemer = redeemer
     let share_asset_name =
       blake2b_256(
         bytearray.concat(
-          seed.output_reference.transaction_id,
+          mint_redeemer.seed_ref.transaction_id,
           bytearray.from_int_little_endian(
-            seed.output_reference.output_index,
+            mint_redeemer.seed_ref.output_index,
             1,
           ),
         ),
@@ -314,12 +320,24 @@ validator pool {
     let is_share_asset_name_stored =
       pool_output_datum.shares_asset_name == share_asset_name
 
+    let is_seed_spent =
+      list.any(
+        transaction.inputs,
+        fn(input) {
+          and {
+            input.output_reference.transaction_id == mint_redeemer.seed_ref.transaction_id,
+            input.output_reference.output_index == mint_redeemer.seed_ref.output_index,
+          }
+        },
+      )
+
     and {
       are_fees_sensible?,
       are_assets_fine?,
       is_pool_value_correct?,
       is_mint_correct?,
       is_share_asset_name_stored?,
+      is_seed_spent?,
     }
   }
 
