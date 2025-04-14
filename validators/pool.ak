@@ -50,6 +50,7 @@ validator pool {
   // * The old pool has a validity token
   // * The new pool has a validity token
   // * The new pool datum's inline
+  // * The new pool doesn't have a reference script
   // * The pool address stays the same
   // * The new pool has the correct number of tokens
   // * The pool datum fields stay the same
@@ -140,6 +141,8 @@ validator pool {
     and {
       // Address doesn't change
       (pool_output.address == pool_address)?,
+      // The new pool doesn't have an inline script
+      (pool_output.reference_script == None)?,
       // Validity token is present in the input
       (quantity_of(pool_input_value, pool_policy_id, validity_asset_name) == 1)?,
       // Validity token is preserved in the output
@@ -175,6 +178,7 @@ validator pool {
   //   total emitted shares are inferred as max shares constant - pool output shares
   // * user gets total emitted shares - burned shares
   // * one output on the pool address with one validity token and shares and correct value
+  // * the pool doesn't have a reference script
   // * the pool has 1 validity token
   // * the pool has at least pool oil ada
   // * the pool has positive A liquidity (disregarding oil for ada pools)
@@ -331,6 +335,8 @@ validator pool {
         },
       )
 
+    let has_no_reference_script = pool_output.reference_script == None
+
     and {
       are_fees_sensible?,
       are_assets_fine?,
@@ -338,6 +344,7 @@ validator pool {
       is_mint_correct?,
       is_share_asset_name_stored?,
       is_seed_spent?,
+      has_no_reference_script?,
     }
   }
 
