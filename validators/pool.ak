@@ -8,12 +8,21 @@ use cardano/assets.{
 }
 use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
 
+type FeeFrom {
+  InputToken
+  OutputToken
+  TokenA
+  TokenB
+}
+
 type PoolDatum {
   a_policy_id: PolicyId,
   a_asset_name: AssetName,
   b_policy_id: PolicyId,
   b_asset_name: AssetName,
-  swap_fee_points: Int,
+  fee_from: FeeFrom,
+  swap_fee_points_a_to_b: Int,
+  swap_fee_points_b_to_a: Int,
   fee_basis: Int,
   shares_asset_name: AssetName,
 }
@@ -67,7 +76,7 @@ validator pool {
   // * The new ada is at least pool oil
   // * The number of shares doesn't change
   // * The swap provides at least some tokens
-  // * User receives at least some tokens NOTE: increasing the min swap to make it harder to block the pool
+  // * User receives at least some tokens NOTE: increasing the min swap makes it harder to block the pool
   // * The swap fee is collected into the pool value
   //
   // For add liquidity
@@ -212,8 +221,10 @@ validator pool {
     expect pool_output_datum: PoolDatum = pool_output_datum_inline
 
     let are_fees_sensible = and {
-        pool_output_datum.swap_fee_points >= 0,
-        pool_output_datum.swap_fee_points <= pool_output_datum.fee_basis,
+        pool_output_datum.swap_fee_points_a_to_b >= 0,
+        pool_output_datum.swap_fee_points_b_to_a >= 0,
+        pool_output_datum.swap_fee_points_a_to_b <= pool_output_datum.fee_basis,
+        pool_output_datum.swap_fee_points_b_to_a <= pool_output_datum.fee_basis,
       }
 
     expect mint_redeemer: MintRedeemer = redeemer
@@ -403,29 +414,14 @@ fn validate_action(
 
   when pool_redeemer is {
     Swap { swap_a_to_b, provided } -> {
-      let swap_fee =
-        div_ceil(
-          provided * pool_input_datum.swap_fee_points,
-          pool_input_datum.fee_basis,
-        )
       let (expected_a_liquidity, expected_b_liquidity, received) =
-        if swap_a_to_b {
-          let new_a = pool_input_a_liquidity + provided
-          let new_b =
-            div_ceil(
-              pool_input_a_liquidity * pool_input_b_liquidity,
-              pool_input_a_liquidity + provided - swap_fee,
-            )
-          (new_a, new_b, pool_input_b_liquidity - new_b)
-        } else {
-          let new_a =
-            div_ceil(
-              pool_input_b_liquidity * pool_input_a_liquidity,
-              pool_input_b_liquidity + provided - swap_fee,
-            )
-          let new_b = pool_input_b_liquidity + provided
-          (new_a, new_b, pool_input_a_liquidity - new_a)
-        }
+        new_liquidity(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          swap_a_to_b,
+          pool_input_datum,
+        )
 
       let is_pool_value_correct = {
         let a_ada_asset_check =
@@ -505,6 +501,153 @@ fn validate_action(
         (shares_output == shares_input)?,
       }
   }
+}
+
+fn new_liquidity(
+  pool_input_a_liquidity: Int,
+  pool_input_b_liquidity: Int,
+  provided: Int,
+  swap_a_to_b: Bool,
+  pool_input_datum: PoolDatum,
+) -> (Int, Int, Int) {
+  when pool_input_datum.fee_from is {
+    InputToken ->
+      if swap_a_to_b {
+        // fee in a, pay a, get b
+        new_liquidity_a_to_b_fee_from_a(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.fee_basis,
+        )
+      } else {
+        // fee in b, pay b, get a
+        new_liquidity_b_to_a_fee_from_b(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.fee_basis,
+        )
+      }
+    OutputToken ->
+      if swap_a_to_b {
+        // fee in b, pay a, get b
+        new_liquidity_a_to_b_fee_from_b(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.fee_basis,
+        )
+      } else {
+        // fee in a, pay b, get a
+        new_liquidity_b_to_a_fee_from_a(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.fee_basis,
+        )
+      }
+    TokenA ->
+      if swap_a_to_b {
+        // fee in a, pay a, get b
+        new_liquidity_a_to_b_fee_from_a(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.fee_basis,
+        )
+      } else {
+        // fee in a, pay b, get a
+        new_liquidity_b_to_a_fee_from_a(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.fee_basis,
+        )
+      }
+    TokenB ->
+      if swap_a_to_b {
+        // fee in b, pay a, get b
+        new_liquidity_a_to_b_fee_from_b(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.fee_basis,
+        )
+      } else {
+        // fee in b, pay b, get a
+        new_liquidity_b_to_a_fee_from_b(
+          pool_input_a_liquidity,
+          pool_input_b_liquidity,
+          provided,
+          pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.fee_basis,
+        )
+      }
+  }
+}
+
+fn new_liquidity_b_to_a_fee_from_a(
+  pool_input_a_liquidity: Int,
+  pool_input_b_liquidity: Int,
+  provided: Int,
+  fee_points: Int,
+  fee_basis: Int,
+) -> (Int, Int, Int) {
+  let new_b = pool_input_b_liquidity + provided
+  let new_a = div_ceil(pool_input_b_liquidity * pool_input_a_liquidity, new_b)
+  let received_plus_fee = pool_input_a_liquidity - new_a
+  let swap_fee = div_ceil(received_plus_fee * fee_points, fee_basis)
+  (new_a, new_b, received_plus_fee - swap_fee)
+}
+
+fn new_liquidity_a_to_b_fee_from_b(
+  pool_input_a_liquidity: Int,
+  pool_input_b_liquidity: Int,
+  provided: Int,
+  fee_points: Int,
+  fee_basis: Int,
+) -> (Int, Int, Int) {
+  let new_a = pool_input_a_liquidity + provided
+  let new_b = div_ceil(pool_input_a_liquidity * pool_input_b_liquidity, new_a)
+  let received_plus_fee = pool_input_b_liquidity - new_b
+  let swap_fee = div_ceil(received_plus_fee * fee_points, fee_basis)
+  (new_a, new_b, received_plus_fee - swap_fee)
+}
+
+fn new_liquidity_a_to_b_fee_from_a(
+  pool_input_a_liquidity: Int,
+  pool_input_b_liquidity: Int,
+  provided: Int,
+  fee_points: Int,
+  fee_basis: Int,
+) -> (Int, Int, Int) {
+  let swap_fee = div_ceil(provided * fee_points, fee_basis)
+  let new_a = pool_input_a_liquidity + provided
+  let new_b =
+    div_ceil(pool_input_a_liquidity * pool_input_b_liquidity, new_a - swap_fee)
+  (new_a, new_b, pool_input_b_liquidity - new_b)
+}
+
+fn new_liquidity_b_to_a_fee_from_b(
+  pool_input_a_liquidity: Int,
+  pool_input_b_liquidity: Int,
+  provided: Int,
+  fee_points: Int,
+  fee_basis: Int,
+) -> (Int, Int, Int) {
+  let swap_fee = div_ceil(provided * fee_points, fee_basis)
+  let new_b = pool_input_b_liquidity + provided
+  let new_a =
+    div_ceil(pool_input_a_liquidity * pool_input_b_liquidity, new_b - swap_fee)
+  (new_a, new_b, pool_input_a_liquidity - new_a)
 }
 
 fn has_script_hash(address: Address, script_hash: ScriptHash) -> Bool {
