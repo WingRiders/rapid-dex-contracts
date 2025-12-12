@@ -1,3 +1,4 @@
+use aiken/builtin
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, blake2b_256}
 use aiken/math.{min}
@@ -252,28 +253,18 @@ validator pool {
 
     expect mint_redeemer: MintRedeemer = redeemer
     let share_asset_name =
-      blake2b_256(
-        bytearray.concat(
-          mint_redeemer.seed_ref.transaction_id,
-          bytearray.from_int_little_endian(
-            mint_redeemer.seed_ref.output_index,
-            1,
-          ),
-        ),
+      share_asset_name_new(
+        mint_redeemer.seed_ref.transaction_id,
+        mint_redeemer.seed_ref.output_index,
       )
 
     let are_assets_fine = and {
-        if pool_output_datum.a_policy_id == pool_output_datum.b_policy_id {
-          (bytearray.compare(
-            pool_output_datum.a_asset_name,
-            pool_output_datum.b_asset_name,
-          ) == Less)?
-        } else {
-          (bytearray.compare(
-            pool_output_datum.a_policy_id,
-            pool_output_datum.b_policy_id,
-          ) == Less)?
-        },
+        are_initial_assets_correct(
+          pool_output_datum.a_policy_id,
+          pool_output_datum.a_asset_name,
+          pool_output_datum.b_policy_id,
+          pool_output_datum.b_asset_name,
+        ),
         // Pools trading shares are allowed
         (pool_output_datum.a_policy_id != pool_hash)? || and {
           (pool_output_datum.a_asset_name != share_asset_name)?,
@@ -333,18 +324,7 @@ validator pool {
 
     let is_mint_correct = {
       let mint = transaction.mint
-      let minted =
-        assets.reduce(
-          mint,
-          0,
-          fn(policy, _, _, acc) {
-            if policy == pool_hash {
-              acc + 1
-            } else {
-              acc
-            }
-          },
-        )
+      let minted = count_tokens_with_policy(mint, pool_hash)
       let validity_count = quantity_of(mint, pool_hash, validity_asset_name)
       let share_count = quantity_of(mint, pool_hash, share_asset_name)
       and {
@@ -386,6 +366,104 @@ validator pool {
   else(_) {
     fail
   }
+}
+
+fn count_tokens_with_policy(v: Value, policy_id: PolicyId) -> Int {
+  assets.reduce(
+    v,
+    0,
+    fn(policy, _, _, acc) {
+      if policy == policy_id {
+        acc + 1
+      } else {
+        acc
+      }
+    },
+  )
+}
+
+test count_tokens_with_policy__zero() {
+  count_tokens_with_policy(assets.zero, #"") == 0
+}
+
+test count_tokens_with_policy__one() {
+  count_tokens_with_policy(assets.from_lovelace(20), #"") == 1
+}
+
+test count_tokens_with_policy__two() {
+  count_tokens_with_policy(
+    assets.from_asset_list([Pair(#"aa", [Pair(#"bb", 10), Pair(#"cc", 20)])]),
+    #"aa",
+  ) == 2
+}
+
+test count_tokens_with_policy__two_and_more() {
+  count_tokens_with_policy(
+    assets.from_asset_list(
+      [
+        Pair(#"aa", [Pair(#"bb", 10), Pair(#"cc", 20)]),
+        Pair(#"ff", [Pair(#"bb", 10), Pair(#"cc", 20)]),
+      ],
+    ),
+    #"aa",
+  ) == 2
+}
+
+fn share_asset_name_new(
+  seed_tx_id: ByteArray,
+  seed_output_index: Int,
+) -> ByteArray {
+  blake2b_256(
+    bytearray.concat(
+      seed_tx_id,
+      bytearray.from_int_little_endian(seed_output_index, 1),
+    ),
+  )
+}
+
+test share_asset_name_new__normal_seed() {
+  share_asset_name_new(#"aabbcc", 0) == #"3a267f760929d8d1ea59262571fdd67e35c2719d3f2ee295c06df665a6358b2d"
+}
+
+test share_asset_name_new__huge_index_seed() {
+  share_asset_name_new(#"aabbcc", 255) == #"b91efdcd77807a87a3453add7860ba90fe83b618ca92200a56a9edaa3f4d54a3"
+}
+
+test share_asset_name_new__too_huge_index_seed() fail {
+  expect _ = share_asset_name_new(#"aabbcc", 256)
+}
+
+fn are_initial_assets_correct(
+  a_policy_id: PolicyId,
+  a_asset_name: AssetName,
+  b_policy_id: PolicyId,
+  b_asset_name: AssetName,
+) -> Bool {
+  if a_policy_id == b_policy_id {
+    builtin.less_than_bytearray(a_asset_name, b_asset_name)?
+  } else {
+    builtin.less_than_bytearray(a_policy_id, b_policy_id)?
+  }
+}
+
+test are_initial_assets_correct__same_asset() {
+  are_initial_assets_correct(#"", #"", #"", #"") == False
+}
+
+test are_initial_assets_correct__a_less_b() {
+  are_initial_assets_correct(#"00", #"11", #"22", #"33") == True
+}
+
+test are_initial_assets_correct__a_less_b_same_policy() {
+  are_initial_assets_correct(#"00", #"11", #"00", #"33") == True
+}
+
+test are_initial_assets_correct__a_greater_b() {
+  are_initial_assets_correct(#"33", #"22", #"11", #"00") == False
+}
+
+test are_initial_assets_correct__a_greater_b_same_policy() {
+  are_initial_assets_correct(#"33", #"22", #"33", #"00") == False
 }
 
 fn validate_action(
@@ -986,6 +1064,26 @@ fn new_liquidity_b_to_a_fee_from_a(
   }
 }
 
+test new_liquidity_b_to_a_fee_from_a__with_fees() {
+  new_liquidity_b_to_a_fee_from_a(100_000, 200_000, 100, 30, 5, 10_000) == Liquidity {
+    expected_a_liquidity: 99_951,
+    expected_b_liquidity: 200_100,
+    received: 47,
+    treasury_diff_a: 1,
+    treasury_diff_b: 0,
+  }
+}
+
+test new_liquidity_b_to_a_fee_from_a__no_fees() {
+  new_liquidity_b_to_a_fee_from_a(100_000, 200_000, 100, 0, 0, 10_000) == Liquidity {
+    expected_a_liquidity: 99_951,
+    expected_b_liquidity: 200_100,
+    received: 49,
+    treasury_diff_a: 0,
+    treasury_diff_b: 0,
+  }
+}
+
 fn new_liquidity_a_to_b_fee_from_b(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
@@ -1006,6 +1104,26 @@ fn new_liquidity_a_to_b_fee_from_b(
     received: received_plus_fee - swap_fee - treasury_fee,
     treasury_diff_a: 0,
     treasury_diff_b: treasury_fee,
+  }
+}
+
+test new_liquidity_a_to_b_fee_from_b__with_fees() {
+  new_liquidity_a_to_b_fee_from_b(100_000, 200_000, 100, 30, 5, 10_000) == Liquidity {
+    expected_a_liquidity: 100_100,
+    expected_b_liquidity: 199_801,
+    received: 197,
+    treasury_diff_a: 0,
+    treasury_diff_b: 1,
+  }
+}
+
+test new_liquidity_a_to_b_fee_from_b__no_fees() {
+  new_liquidity_a_to_b_fee_from_b(100_000, 200_000, 100, 0, 0, 10_000) == Liquidity {
+    expected_a_liquidity: 100_100,
+    expected_b_liquidity: 199_801,
+    received: 199,
+    treasury_diff_a: 0,
+    treasury_diff_b: 0,
   }
 }
 
@@ -1031,6 +1149,26 @@ fn new_liquidity_a_to_b_fee_from_a(
   }
 }
 
+test new_liquidity_a_to_b_fee_from_a__with_fees() {
+  new_liquidity_a_to_b_fee_from_a(100_000, 200_000, 100, 30, 5, 10_000) == Liquidity {
+    expected_a_liquidity: 100_099,
+    expected_b_liquidity: 199_805,
+    received: 195,
+    treasury_diff_a: 1,
+    treasury_diff_b: 0,
+  }
+}
+
+test new_liquidity_a_to_b_fee_from_a__no_fees() {
+  new_liquidity_a_to_b_fee_from_a(100_000, 200_000, 100, 0, 0, 10_000) == Liquidity {
+    expected_a_liquidity: 100_100,
+    expected_b_liquidity: 199_801,
+    received: 199,
+    treasury_diff_a: 0,
+    treasury_diff_b: 0,
+  }
+}
+
 fn new_liquidity_b_to_a_fee_from_b(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
@@ -1050,6 +1188,26 @@ fn new_liquidity_b_to_a_fee_from_b(
     received: pool_input_a_liquidity - new_a,
     treasury_diff_a: 0,
     treasury_diff_b: treasury_fee,
+  }
+}
+
+test new_liquidity_b_to_a_fee_from_b__with_fees() {
+  new_liquidity_b_to_a_fee_from_b(100_000, 200_000, 100, 30, 5, 10_000) == Liquidity {
+    expected_a_liquidity: 99_952,
+    expected_b_liquidity: 200_099,
+    received: 48,
+    treasury_diff_a: 0,
+    treasury_diff_b: 1,
+  }
+}
+
+test new_liquidity_b_to_a_fee_from_b__no_fees() {
+  new_liquidity_b_to_a_fee_from_b(100_000, 200_000, 100, 0, 0, 10_000) == Liquidity {
+    expected_a_liquidity: 99_951,
+    expected_b_liquidity: 200_100,
+    received: 49,
+    treasury_diff_a: 0,
+    treasury_diff_b: 0,
   }
 }
 
@@ -1114,8 +1272,74 @@ fn has_script_hash(address: Address, script_hash: ScriptHash) -> Bool {
   }
 }
 
+test has_script_hash__script_match() {
+  has_script_hash(
+    Address { payment_credential: Script(#"0123"), stake_credential: None },
+    #"0123",
+  ) == True
+}
+
+test has_script_hash__script_diff() {
+  has_script_hash(
+    Address { payment_credential: Script(#"0123"), stake_credential: None },
+    #"3210",
+  ) == False
+}
+
+test has_script_hash__pubkey() {
+  has_script_hash(
+    Address {
+      payment_credential: VerificationKey(#"0123"),
+      stake_credential: None,
+    },
+    #"0123",
+  ) == False
+}
+
 fn count_tokens(v: Value) -> Int {
   assets.reduce(v, 0, fn(_, _, _, acc) { acc + 1 })
+}
+
+test count_token__zero() {
+  count_tokens(assets.zero) == 0
+}
+
+test count_token__only_ada() {
+  count_tokens(assets.from_lovelace(100)) == 1
+}
+
+test count_token__only_token() {
+  count_tokens(assets.from_asset(#"0123", #"3210", 5)) == 1
+}
+
+test count_token__ada_token() {
+  count_tokens(
+    assets.from_asset_list(
+      [Pair(#"", [Pair(#"", 10)]), Pair(#"0123", [Pair(#"3210", 5)])],
+    ),
+  ) == 2
+}
+
+test count_token__ada_2_tokens_share_policy() {
+  count_tokens(
+    assets.from_asset_list(
+      [
+        Pair(#"", [Pair(#"", 10)]),
+        Pair(#"0123", [Pair(#"3210", 5), Pair(#"7895", 6)]),
+      ],
+    ),
+  ) == 3
+}
+
+test count_token__ada_2_tokens_diff_policy() {
+  count_tokens(
+    assets.from_asset_list(
+      [
+        Pair(#"", [Pair(#"", 10)]), Pair(#"0123", [Pair(#"3210", 5)]),
+        Pair(#"4560", [Pair(#"7895", 6)]),
+      ],
+    ),
+  ) == 3
 }
 
 fn div_ceil(a: Int, b: Int) -> Int {
@@ -1124,6 +1348,18 @@ fn div_ceil(a: Int, b: Int) -> Int {
   } else {
     0
   }
+}
+
+test div_ceil__zero() fail {
+  expect _ = div_ceil(100, 0)
+}
+
+test div_ceil__exact() {
+  div_ceil(100, 4) == 25
+}
+
+test div_ceil__non_exact() {
+  div_ceil(99, 4) == 25
 }
 
 // Asset A + Asset B + Ada if Asset A != Ada + Shares Asset + Validity Asset
@@ -1138,4 +1374,162 @@ fn expected_pool_token_count(is_ada_pool: Bool, share_count: Int) -> Int {
   } else {
     0
   }
+}
+
+test expected_pool_token_count__ada_share() {
+  expected_pool_token_count(True, 1) == 4
+}
+
+test expected_pool_token_count__ada_no_shares() {
+  expected_pool_token_count(True, 0) == 3
+}
+
+test expected_pool_token_count__nonada_share() {
+  expected_pool_token_count(False, 1) == 5
+}
+
+test expected_pool_token_count__nonada_no_shares() {
+  expected_pool_token_count(False, 0) == 4
+}
+
+test are_pool_datums_same_without_treasuries__identical() {
+  let datum =
+    PoolDatum {
+      a_policy_id: #"0123",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 100,
+      treasury_b: 200,
+      fee_from: InputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  are_pool_datums_same_without_treasuries(datum, datum) == True
+}
+
+test are_pool_datums_same_without_treasuries__different_treasury_only() {
+  let datum1 =
+    PoolDatum {
+      a_policy_id: #"0123",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 100,
+      treasury_b: 200,
+      fee_from: InputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  let datum2 =
+    PoolDatum {
+      a_policy_id: #"0123",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 150,
+      treasury_b: 250,
+      fee_from: InputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  are_pool_datums_same_without_treasuries(datum1, datum2) == True
+}
+
+test are_pool_datums_same_without_treasuries__different_a_policy() {
+  let datum1 =
+    PoolDatum {
+      a_policy_id: #"0123",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 100,
+      treasury_b: 200,
+      fee_from: InputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  let datum2 =
+    PoolDatum {
+      a_policy_id: #"abcd",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 100,
+      treasury_b: 200,
+      fee_from: InputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  are_pool_datums_same_without_treasuries(datum1, datum2) == False
+}
+
+test are_pool_datums_same_without_treasuries__different_fee_from() {
+  let datum1 =
+    PoolDatum {
+      a_policy_id: #"0123",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 100,
+      treasury_b: 200,
+      fee_from: InputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  let datum2 =
+    PoolDatum {
+      a_policy_id: #"0123",
+      a_asset_name: #"4567",
+      b_policy_id: #"89ab",
+      b_asset_name: #"cdef",
+      treasury_a: 100,
+      treasury_b: 200,
+      fee_from: OutputToken,
+      treasury_authority_policy_id: #"fedc",
+      treasury_authority_asset_name: #"ba98",
+      treasury_fee_points_a_to_b: 10,
+      treasury_fee_points_b_to_a: 20,
+      swap_fee_points_a_to_b: 30,
+      swap_fee_points_b_to_a: 40,
+      fee_basis: 1000,
+      shares_asset_name: #"7654",
+    }
+  are_pool_datums_same_without_treasuries(datum1, datum2) == False
 }
