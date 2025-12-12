@@ -35,10 +35,16 @@ type PoolDatum {
   shares_asset_name: AssetName,
 }
 
+type WithdrawType {
+  ToBoth
+  ToA
+  ToB
+}
+
 type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
   AddLiquidity { a_add: Int, b_add: Int, x_swap: Int }
-  WithdrawLiquidity { shares_add: Int }
+  WithdrawLiquidity { shares_add: Int, withdraw_type: WithdrawType }
   WithdrawTreasury
   Donate
 }
@@ -710,25 +716,93 @@ fn validate_action(
       }
     }
 
-    WithdrawLiquidity { shares_add } -> {
+    WithdrawLiquidity { shares_add, withdraw_type } -> {
       let shares_total_emitted = max_share_tokens - shares_input
+
       let a_remove = shares_add * pool_input_a_liquidity / shares_total_emitted
       let b_remove = shares_add * pool_input_b_liquidity / shares_total_emitted
+
       let expected_shares_output = shares_input + shares_add
-      let a_asset_check = as_output == as_input - a_remove
-      let ada_check = ada_output >= pool_oil
-      let b_asset_check = bs_output == bs_input - b_remove
-      let shares_asset_check = shares_output == expected_shares_output
-      let datum_check = pool_input_datum == pool_output_datum
-      and {
-        datum_check?,
-        a_asset_check?,
-        ada_check?,
-        b_asset_check?,
-        shares_asset_check?,
-        (shares_add > 0)?,
-        (a_remove > 0)?,
-        (b_remove > 0)?,
+      let share_asset_check = shares_output == expected_shares_output
+
+      when withdraw_type is {
+        ToA | ToB -> {
+          // A zap-out is mathematically the same as a normal withdrawal
+          // followed by a swap.
+          // That's what we simulate here
+          let swap_a_to_b = withdraw_type == ToB
+
+          // Pool liquidity after liquidity withdrawal, before swap
+          let a_pool_interim = pool_input_a_liquidity - a_remove
+          let b_pool_interim = pool_input_b_liquidity - b_remove
+
+          let Liquidity {
+            expected_a_liquidity,
+            expected_b_liquidity,
+            received,
+            treasury_diff_a,
+            treasury_diff_b,
+          } =
+            new_liquidity(
+              a_pool_interim,
+              b_pool_interim,
+              if swap_a_to_b {
+                a_remove
+              } else {
+                b_remove
+              },
+              swap_a_to_b,
+              pool_input_datum,
+            )
+
+          let a_ada_asset_check =
+            if is_ada_pool {
+              (as_output >= expected_a_liquidity + pool_oil + pool_output_datum.treasury_a)?
+            } else {
+              and {
+                (as_output >= expected_a_liquidity + pool_output_datum.treasury_a)?,
+                (ada_output >= pool_oil)?,
+              }
+            }
+          let b_asset_check =
+            bs_output >= expected_b_liquidity + pool_output_datum.treasury_b
+
+          let datum_check = and {
+              are_pool_datums_same_without_treasuries(
+                pool_input_datum,
+                pool_output_datum,
+              ),
+              pool_output_datum.treasury_a == pool_input_datum.treasury_a + treasury_diff_a,
+              pool_output_datum.treasury_b == pool_input_datum.treasury_b + treasury_diff_b,
+            }
+
+          and {
+            datum_check?,
+            a_ada_asset_check?,
+            b_asset_check?,
+            share_asset_check?,
+            (shares_add > 0)?,
+            (a_remove > 0)?,
+            (b_remove > 0)?,
+            (received > 0)?,
+          }
+        }
+
+        ToBoth -> {
+          let a_asset_check = as_output == as_input - a_remove
+          let ada_check = ada_output >= pool_oil
+          let b_asset_check = bs_output == bs_input - b_remove
+          let datum_check = pool_input_datum == pool_output_datum
+          and {
+            datum_check?,
+            a_asset_check?,
+            ada_check?,
+            b_asset_check?,
+            (shares_add > 0)?,
+            (a_remove > 0)?,
+            (b_remove > 0)?,
+          }
+        }
       }
     }
 
