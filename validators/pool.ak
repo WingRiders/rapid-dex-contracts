@@ -6,7 +6,9 @@ use cardano/address.{Address, Script, VerificationKey}
 use cardano/assets.{
   AssetName, PolicyId, Value, ada_policy_id, lovelace_of, quantity_of,
 }
-use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
+use cardano/transaction.{
+  InlineDatum, Input, Output, OutputReference, Transaction,
+}
 
 type FeeFrom {
   InputToken
@@ -20,7 +22,13 @@ type PoolDatum {
   a_asset_name: AssetName,
   b_policy_id: PolicyId,
   b_asset_name: AssetName,
+  treasury_a: Int,
+  treasury_b: Int,
   fee_from: FeeFrom,
+  treasury_authority_policy_id: PolicyId,
+  treasury_authority_asset_name: AssetName,
+  treasury_fee_points_a_to_b: Int,
+  treasury_fee_points_b_to_a: Int,
   swap_fee_points_a_to_b: Int,
   swap_fee_points_b_to_a: Int,
   fee_basis: Int,
@@ -31,6 +39,7 @@ type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
   AddLiquidity { a_add: Int, b_add: Int }
   WithdrawLiquidity { shares_add: Int }
+  WithdrawTreasury
   Donate
 }
 
@@ -62,7 +71,7 @@ validator pool {
   // * The new pool doesn't have a reference script
   // * The pool address stays the same
   // * The new pool has the correct number of tokens
-  // * The pool datum fields stay the same
+  // * The pool datum fields stay the same (apart from maybe treasuries)
   //
   // NOTE: the contract doesn't check user compensations directly
   //       but only the pool values;
@@ -158,13 +167,13 @@ validator pool {
       (quantity_of(pool_output_value, pool_policy_id, validity_asset_name) == 1)?,
       // Asset A, Asset B, Ada if Asset A != Ada, Shares Asset, Validity Asset
       (count_tokens(pool_output_value) == expected_token_count)?,
-      // Datum is preserved
-      (pool_input_datum == pool_output_datum)?,
       validate_action(
+        transaction.inputs,
         pool_redeemer,
         is_ada_pool,
         pool_policy_id,
         pool_input_datum,
+        pool_output_datum,
         pool_input_value,
         pool_output_value,
         pool_ada_output,
@@ -208,6 +217,7 @@ validator pool {
   //   (share asset name is blake2b_256 [seed's utxo ref's tx id <> output index])
   // * share asset name is constructed from the seed output ref
   // * share asset name is stored in the datum
+  // * the initial treasuries are 0
   mint(redeemer: Data, policy_id: PolicyId, transaction: Transaction) {
     let pool_hash = policy_id
     // One pool output
@@ -220,11 +230,18 @@ validator pool {
     expect InlineDatum(pool_output_datum_inline) = pool_output.datum
     expect pool_output_datum: PoolDatum = pool_output_datum_inline
 
+    let are_treasuries_empty = and {
+        pool_output_datum.treasury_a == 0,
+        pool_output_datum.treasury_b == 0,
+      }
+
     let are_fees_sensible = and {
         pool_output_datum.swap_fee_points_a_to_b >= 0,
         pool_output_datum.swap_fee_points_b_to_a >= 0,
-        pool_output_datum.swap_fee_points_a_to_b <= pool_output_datum.fee_basis,
-        pool_output_datum.swap_fee_points_b_to_a <= pool_output_datum.fee_basis,
+        pool_output_datum.treasury_fee_points_a_to_b >= 0,
+        pool_output_datum.treasury_fee_points_b_to_a >= 0,
+        pool_output_datum.swap_fee_points_a_to_b + pool_output_datum.treasury_fee_points_a_to_b <= pool_output_datum.fee_basis,
+        pool_output_datum.swap_fee_points_b_to_a + pool_output_datum.treasury_fee_points_b_to_a <= pool_output_datum.fee_basis,
       }
 
     expect mint_redeemer: MintRedeemer = redeemer
@@ -350,6 +367,7 @@ validator pool {
 
     and {
       are_fees_sensible?,
+      are_treasuries_empty?,
       are_assets_fine?,
       is_pool_value_correct?,
       is_mint_correct?,
@@ -365,10 +383,12 @@ validator pool {
 }
 
 fn validate_action(
+  inputs: List<Input>,
   pool_redeemer: PoolRedeemer,
   is_ada_pool: Bool,
   pool_policy_id: PolicyId,
   pool_input_datum: PoolDatum,
+  pool_output_datum: PoolDatum,
   pool_input_value: Value,
   pool_output_value: Value,
   ada_output: Int,
@@ -409,12 +429,18 @@ fn validate_action(
       as_input - pool_oil
     } else {
       as_input
-    }
-  let pool_input_b_liquidity = bs_input
+    } - pool_input_datum.treasury_a
+  let pool_input_b_liquidity = bs_input - pool_input_datum.treasury_b
 
   when pool_redeemer is {
     Swap { swap_a_to_b, provided } -> {
-      let (expected_a_liquidity, expected_b_liquidity, received) =
+      let Liquidity {
+        expected_a_liquidity,
+        expected_b_liquidity,
+        received,
+        treasury_diff_a,
+        treasury_diff_b,
+      } =
         new_liquidity(
           pool_input_a_liquidity,
           pool_input_b_liquidity,
@@ -426,15 +452,16 @@ fn validate_action(
       let is_pool_value_correct = {
         let a_ada_asset_check =
           if is_ada_pool {
-            (as_output >= expected_a_liquidity + pool_oil)?
+            (as_output >= expected_a_liquidity + pool_oil + pool_output_datum.treasury_a)?
           } else {
             and {
-              (as_output >= expected_a_liquidity)?,
+              (as_output >= expected_a_liquidity + pool_output_datum.treasury_a)?,
               (ada_output >= pool_oil)?,
             }
           }
 
-        let b_asset_check = bs_output >= expected_b_liquidity
+        let b_asset_check =
+          bs_output >= expected_b_liquidity + pool_output_datum.treasury_b
         let shares_asset_check = shares_output == shares_input
         and {
           a_ada_asset_check?,
@@ -443,7 +470,17 @@ fn validate_action(
         }
       }
 
+      let datum_check = and {
+          are_pool_datums_same_without_treasuries(
+            pool_input_datum,
+            pool_output_datum,
+          ),
+          pool_output_datum.treasury_a == pool_input_datum.treasury_a + treasury_diff_a,
+          pool_output_datum.treasury_b == pool_input_datum.treasury_b + treasury_diff_b,
+        }
+
       and {
+        datum_check?,
         is_pool_value_correct?,
         (provided > 0)?,
         (received > 0)?,
@@ -463,7 +500,9 @@ fn validate_action(
       let b_asset_check = bs_output == bs_input + b_add
       let ada_check = ada_output >= pool_oil
       let shares_asset_check = shares_output == expected_shares_output
+      let datum_check = pool_input_datum == pool_output_datum
       and {
+        datum_check?,
         a_asset_check?,
         b_asset_check?,
         ada_check?,
@@ -483,7 +522,9 @@ fn validate_action(
       let ada_check = ada_output >= pool_oil
       let b_asset_check = bs_output == bs_input - b_remove
       let shares_asset_check = shares_output == expected_shares_output
+      let datum_check = pool_input_datum == pool_output_datum
       and {
+        datum_check?,
         a_asset_check?,
         ada_check?,
         b_asset_check?,
@@ -494,7 +535,48 @@ fn validate_action(
       }
     }
 
+    WithdrawTreasury -> {
+      let datum_check = and {
+          are_pool_datums_same_without_treasuries(
+            pool_input_datum,
+            pool_output_datum,
+          ),
+          pool_output_datum.treasury_a == 0,
+          pool_output_datum.treasury_b == 0,
+        }
+      let authority_check =
+        list.any(
+          inputs,
+          fn(input) {
+            quantity_of(
+              input.output.value,
+              pool_input_datum.treasury_authority_policy_id,
+              pool_input_datum.treasury_authority_asset_name,
+            ) > 0
+          },
+        )
+      let assets_check = {
+        let a_assets_check = as_output == as_input - pool_input_datum.treasury_a
+        let b_assets_check = bs_output == bs_input - pool_input_datum.treasury_b
+        let ada_check = ada_output >= pool_oil
+        and {
+          a_assets_check,
+          b_assets_check,
+          ada_check,
+        }
+      }
+      let spam_check =
+        pool_input_datum.treasury_a > 0 || pool_input_datum.treasury_b > 0
+      and {
+        spam_check?,
+        datum_check?,
+        authority_check?,
+        assets_check?,
+      }
+    }
+
     Donate -> and {
+        (pool_input_datum == pool_output_datum)?,
         (ada_output >= lovelace_of(pool_input_value))?,
         (as_output >= as_input)?,
         (bs_output >= bs_input)?,
@@ -503,13 +585,21 @@ fn validate_action(
   }
 }
 
+type Liquidity {
+  expected_a_liquidity: Int,
+  expected_b_liquidity: Int,
+  received: Int,
+  treasury_diff_a: Int,
+  treasury_diff_b: Int,
+}
+
 fn new_liquidity(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
   provided: Int,
   swap_a_to_b: Bool,
   pool_input_datum: PoolDatum,
-) -> (Int, Int, Int) {
+) -> Liquidity {
   when pool_input_datum.fee_from is {
     InputToken ->
       if swap_a_to_b {
@@ -519,6 +609,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.treasury_fee_points_a_to_b,
           pool_input_datum.fee_basis,
         )
       } else {
@@ -528,6 +619,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.treasury_fee_points_b_to_a,
           pool_input_datum.fee_basis,
         )
       }
@@ -539,6 +631,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.treasury_fee_points_a_to_b,
           pool_input_datum.fee_basis,
         )
       } else {
@@ -548,6 +641,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.treasury_fee_points_b_to_a,
           pool_input_datum.fee_basis,
         )
       }
@@ -559,6 +653,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.treasury_fee_points_a_to_b,
           pool_input_datum.fee_basis,
         )
       } else {
@@ -568,6 +663,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.treasury_fee_points_b_to_a,
           pool_input_datum.fee_basis,
         )
       }
@@ -579,6 +675,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_a_to_b,
+          pool_input_datum.treasury_fee_points_a_to_b,
           pool_input_datum.fee_basis,
         )
       } else {
@@ -588,6 +685,7 @@ fn new_liquidity(
           pool_input_b_liquidity,
           provided,
           pool_input_datum.swap_fee_points_b_to_a,
+          pool_input_datum.treasury_fee_points_b_to_a,
           pool_input_datum.fee_basis,
         )
       }
@@ -598,56 +696,144 @@ fn new_liquidity_b_to_a_fee_from_a(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
   provided: Int,
-  fee_points: Int,
+  swap_fee_points: Int,
+  treasury_fee_points: Int,
   fee_basis: Int,
-) -> (Int, Int, Int) {
+) -> Liquidity {
   let new_b = pool_input_b_liquidity + provided
   let new_a = div_ceil(pool_input_b_liquidity * pool_input_a_liquidity, new_b)
   let received_plus_fee = pool_input_a_liquidity - new_a
-  let swap_fee = div_ceil(received_plus_fee * fee_points, fee_basis)
-  (new_a, new_b, received_plus_fee - swap_fee)
+  let swap_fee = div_ceil(received_plus_fee * swap_fee_points, fee_basis)
+  let treasury_fee =
+    div_ceil(received_plus_fee * treasury_fee_points, fee_basis)
+  Liquidity {
+    expected_a_liquidity: new_a,
+    expected_b_liquidity: new_b,
+    received: received_plus_fee - swap_fee - treasury_fee,
+    treasury_diff_a: treasury_fee,
+    treasury_diff_b: 0,
+  }
 }
 
 fn new_liquidity_a_to_b_fee_from_b(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
   provided: Int,
-  fee_points: Int,
+  swap_fee_points: Int,
+  treasury_fee_points: Int,
   fee_basis: Int,
-) -> (Int, Int, Int) {
+) -> Liquidity {
   let new_a = pool_input_a_liquidity + provided
   let new_b = div_ceil(pool_input_a_liquidity * pool_input_b_liquidity, new_a)
   let received_plus_fee = pool_input_b_liquidity - new_b
-  let swap_fee = div_ceil(received_plus_fee * fee_points, fee_basis)
-  (new_a, new_b, received_plus_fee - swap_fee)
+  let swap_fee = div_ceil(received_plus_fee * swap_fee_points, fee_basis)
+  let treasury_fee =
+    div_ceil(received_plus_fee * treasury_fee_points, fee_basis)
+  Liquidity {
+    expected_a_liquidity: new_a,
+    expected_b_liquidity: new_b,
+    received: received_plus_fee - swap_fee - treasury_fee,
+    treasury_diff_a: 0,
+    treasury_diff_b: treasury_fee,
+  }
 }
 
 fn new_liquidity_a_to_b_fee_from_a(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
   provided: Int,
-  fee_points: Int,
+  swap_fee_points: Int,
+  treasury_fee_points: Int,
   fee_basis: Int,
-) -> (Int, Int, Int) {
-  let swap_fee = div_ceil(provided * fee_points, fee_basis)
-  let new_a = pool_input_a_liquidity + provided
+) -> Liquidity {
+  let swap_fee = div_ceil(provided * swap_fee_points, fee_basis)
+  let treasury_fee = div_ceil(provided * treasury_fee_points, fee_basis)
+  let new_a = pool_input_a_liquidity + provided - treasury_fee
   let new_b =
     div_ceil(pool_input_a_liquidity * pool_input_b_liquidity, new_a - swap_fee)
-  (new_a, new_b, pool_input_b_liquidity - new_b)
+  Liquidity {
+    expected_a_liquidity: new_a,
+    expected_b_liquidity: new_b,
+    received: pool_input_b_liquidity - new_b,
+    treasury_diff_a: treasury_fee,
+    treasury_diff_b: 0,
+  }
 }
 
 fn new_liquidity_b_to_a_fee_from_b(
   pool_input_a_liquidity: Int,
   pool_input_b_liquidity: Int,
   provided: Int,
-  fee_points: Int,
+  swap_fee_points: Int,
+  treasury_fee_points: Int,
   fee_basis: Int,
-) -> (Int, Int, Int) {
-  let swap_fee = div_ceil(provided * fee_points, fee_basis)
-  let new_b = pool_input_b_liquidity + provided
+) -> Liquidity {
+  let swap_fee = div_ceil(provided * swap_fee_points, fee_basis)
+  let treasury_fee = div_ceil(provided * treasury_fee_points, fee_basis)
+  let new_b = pool_input_b_liquidity + provided - treasury_fee
   let new_a =
     div_ceil(pool_input_a_liquidity * pool_input_b_liquidity, new_b - swap_fee)
-  (new_a, new_b, pool_input_a_liquidity - new_a)
+  Liquidity {
+    expected_a_liquidity: new_a,
+    expected_b_liquidity: new_b,
+    received: pool_input_a_liquidity - new_a,
+    treasury_diff_a: 0,
+    treasury_diff_b: treasury_fee,
+  }
+}
+
+fn are_pool_datums_same_without_treasuries(in: PoolDatum, out: PoolDatum) {
+  let PoolDatum {
+    a_policy_id: in_a_policy_id,
+    a_asset_name: in_a_asset_name,
+    b_policy_id: in_b_policy_id,
+    b_asset_name: in_b_asset_name,
+    treasury_authority_policy_id: in_treasury_authority_policy_id,
+    treasury_authority_asset_name: in_treasury_authority_asset_name,
+    treasury_a: _in_treasury_a,
+    treasury_b: _in_treasury_b,
+    fee_from: in_fee_from,
+    treasury_fee_points_a_to_b: in_treasury_fee_points_a_to_b,
+    treasury_fee_points_b_to_a: in_treasury_fee_points_b_to_a,
+    swap_fee_points_a_to_b: in_swap_fee_points_a_to_b,
+    swap_fee_points_b_to_a: in_swap_fee_points_b_to_a,
+    fee_basis: in_fee_basis,
+    shares_asset_name: in_shares_asset_name,
+  } = in
+
+  let PoolDatum {
+    a_policy_id: out_a_policy_id,
+    a_asset_name: out_a_asset_name,
+    b_policy_id: out_b_policy_id,
+    b_asset_name: out_b_asset_name,
+    treasury_authority_policy_id: out_treasury_authority_policy_id,
+    treasury_authority_asset_name: out_treasury_authority_asset_name,
+    treasury_a: _out_treasury_a,
+    treasury_b: _out_treasury_b,
+    fee_from: out_fee_from,
+    treasury_fee_points_a_to_b: out_treasury_fee_points_a_to_b,
+    treasury_fee_points_b_to_a: out_treasury_fee_points_b_to_a,
+    swap_fee_points_a_to_b: out_swap_fee_points_a_to_b,
+    swap_fee_points_b_to_a: out_swap_fee_points_b_to_a,
+    fee_basis: out_fee_basis,
+    shares_asset_name: out_shares_asset_name,
+  } = out
+
+  and {
+    in_a_policy_id == out_a_policy_id,
+    in_a_asset_name == out_a_asset_name,
+    in_b_policy_id == out_b_policy_id,
+    in_b_asset_name == out_b_asset_name,
+    in_fee_from == out_fee_from,
+    in_treasury_authority_policy_id == out_treasury_authority_policy_id,
+    in_treasury_authority_asset_name == out_treasury_authority_asset_name,
+    in_treasury_fee_points_a_to_b == out_treasury_fee_points_a_to_b,
+    in_treasury_fee_points_b_to_a == out_treasury_fee_points_b_to_a,
+    in_swap_fee_points_a_to_b == out_swap_fee_points_a_to_b,
+    in_swap_fee_points_b_to_a == out_swap_fee_points_b_to_a,
+    in_fee_basis == out_fee_basis,
+    in_shares_asset_name == out_shares_asset_name,
+  }
 }
 
 fn has_script_hash(address: Address, script_hash: ScriptHash) -> Bool {
