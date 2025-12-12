@@ -37,7 +37,7 @@ type PoolDatum {
 
 type PoolRedeemer {
   Swap { swap_a_to_b: Bool, provided: Int }
-  AddLiquidity { a_add: Int, b_add: Int }
+  AddLiquidity { a_add: Int, b_add: Int, x_swap: Int }
   WithdrawLiquidity { shares_add: Int }
   WithdrawTreasury
   Donate
@@ -487,29 +487,226 @@ fn validate_action(
       }
     }
 
-    AddLiquidity { a_add, b_add } -> {
-      let shares_total_emitted = max_share_tokens - shares_input
-      let shares_earned_from_a =
-        a_add * shares_total_emitted / pool_input_a_liquidity
-      let shares_earned_from_b =
-        b_add * shares_total_emitted / pool_input_b_liquidity
-      let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
-      let expected_shares_output = shares_input - shares_earned
+    AddLiquidity { a_add, b_add, x_swap } -> {
+      // when one of the a_add or b_add is zero, that's a zap-in
+      // zap-ins are mathematically the same as a swap
+      // and a balanced add liquidity afterwards
+      //
+      // the swap portion has to be calculated off-chain,
+      // the contract just verifies it
+      // the correct swap value produces a subsequent add liquidity
+      // with roughly equal shares increase from both tokens
+      //
+      // the contract calculates the expected shares from swap X
+      // and from (swap X - 1) and ensures the given swap X indeed
+      // produces rougly equal shares for the user
+      //
+      // for normal liquidity provision swap X is ignored
 
-      let a_asset_check = as_output == as_input + a_add
-      let b_asset_check = bs_output == bs_input + b_add
-      let ada_check = ada_output >= pool_oil
-      let shares_asset_check = shares_output == expected_shares_output
-      let datum_check = pool_input_datum == pool_output_datum
-      and {
-        datum_check?,
-        a_asset_check?,
-        b_asset_check?,
-        ada_check?,
-        shares_asset_check?,
-        (a_add > 0)?,
-        (b_add > 0)?,
-        (shares_earned > 0)?,
+      let shares_total_emitted = max_share_tokens - shares_input
+
+      if a_add == 0 {
+        // This is a Zap-In with B since a_add == 0,
+        // we need to swap some B to get A
+        let b_swap = x_swap
+
+        // shares received with the provided intended swap value
+        let Liquidity {
+          expected_a_liquidity: a_pool_interim,
+          expected_b_liquidity: b_pool_interim,
+          // a_received is then added as liquidity
+          received: a_received,
+          treasury_diff_a,
+          treasury_diff_b,
+        } =
+          new_liquidity(
+            pool_input_a_liquidity,
+            pool_input_b_liquidity,
+            b_swap,
+            False,
+            pool_input_datum,
+          )
+        let b_add_liquidity = b_add - b_swap
+        let shares_earned_from_a =
+          a_received * shares_total_emitted / a_pool_interim
+        let shares_earned_from_b =
+          b_add_liquidity * shares_total_emitted / b_pool_interim
+
+        // shares received if the swap value were -1 from the intended one
+        let Liquidity {
+          // pool liquidity after swap, before add liquidity
+          expected_a_liquidity: a_pool_interim1,
+          expected_b_liquidity: b_pool_interim1,
+          received: a_received1,
+          treasury_diff_a: _,
+          treasury_diff_b: _,
+        } =
+          new_liquidity(
+            pool_input_a_liquidity,
+            pool_input_b_liquidity,
+            b_swap - 1,
+            False,
+            pool_input_datum,
+          )
+        let b_add_liquidity1 = b_add - ( b_swap - 1 )
+        let shares_earned_from_a1 =
+          a_received1 * shares_total_emitted / a_pool_interim1
+        let shares_earned_from_b1 =
+          b_add_liquidity1 * shares_total_emitted / b_pool_interim1
+
+        let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
+        let expected_shares_output = shares_input - shares_earned
+
+        let a_ada_asset_check =
+          if is_ada_pool {
+            (as_output >= a_pool_interim + a_received + pool_oil + pool_output_datum.treasury_a)?
+          } else {
+            and {
+              (as_output >= a_pool_interim + a_received + pool_output_datum.treasury_a)?,
+              (ada_output >= pool_oil)?,
+            }
+          }
+        let b_asset_check =
+          bs_output >= b_pool_interim + b_add_liquidity + pool_output_datum.treasury_b
+        let shares_asset_check = shares_output == expected_shares_output
+        let datum_check = and {
+            are_pool_datums_same_without_treasuries(
+              pool_input_datum,
+              pool_output_datum,
+            ),
+            pool_output_datum.treasury_a == pool_input_datum.treasury_a + treasury_diff_a,
+            pool_output_datum.treasury_b == pool_input_datum.treasury_b + treasury_diff_b,
+          }
+
+        and {
+          // failing this means you need to swap more
+          (shares_earned_from_b <= shares_earned_from_a)?,
+          // failing this means you need to swap less
+          (shares_earned_from_b1 > shares_earned_from_a1)?,
+          // some values don't make sense
+          (b_swap > 0)?,
+          // some values don't make sense
+          (b_swap < b_add)?,
+          datum_check?,
+          a_ada_asset_check?,
+          b_asset_check?,
+          shares_asset_check?,
+          (b_add > 0)?,
+          (shares_earned > 0)?,
+        }
+      } else if b_add == 0 {
+        // This is a Zap-In since b_add == 0,
+        // we need to swap some A to get B
+        let a_swap = x_swap
+
+        // shares received with the provided intended swap value
+        let Liquidity {
+          // pool liquidity after swap, before add liquidity
+          expected_a_liquidity: a_pool_interim,
+          expected_b_liquidity: b_pool_interim,
+          // b_received is then added as liquidity
+          received: b_received,
+          treasury_diff_a,
+          treasury_diff_b,
+        } =
+          new_liquidity(
+            pool_input_a_liquidity,
+            pool_input_b_liquidity,
+            a_swap,
+            True,
+            pool_input_datum,
+          )
+        let a_add_liquidity = a_add - a_swap
+        let shares_earned_from_a =
+          a_add_liquidity * shares_total_emitted / a_pool_interim
+        let shares_earned_from_b =
+          b_received * shares_total_emitted / b_pool_interim
+
+        // shares received if the swap value were -1 from the intended one
+        let Liquidity {
+          expected_a_liquidity: a_pool_interim1,
+          expected_b_liquidity: b_pool_interim1,
+          received: b_received1,
+          treasury_diff_a: _,
+          treasury_diff_b: _,
+        } =
+          new_liquidity(
+            pool_input_a_liquidity,
+            pool_input_b_liquidity,
+            a_swap - 1,
+            True,
+            pool_input_datum,
+          )
+        let a_add_liquidity1 = a_add - ( a_swap - 1 )
+        let shares_earned_from_a1 =
+          a_add_liquidity1 * shares_total_emitted / a_pool_interim1
+        let shares_earned_from_b1 =
+          b_received1 * shares_total_emitted / b_pool_interim1
+
+        let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
+        let expected_shares_output = shares_input - shares_earned
+
+        let a_ada_asset_check =
+          if is_ada_pool {
+            (as_output >= a_pool_interim + pool_oil + pool_output_datum.treasury_a)?
+          } else {
+            and {
+              (as_output >= a_pool_interim + pool_output_datum.treasury_a)?,
+              (ada_output >= pool_oil)?,
+            }
+          }
+        let b_asset_check =
+          bs_output >= b_pool_interim + b_received + pool_output_datum.treasury_b
+        let shares_asset_check = shares_output == expected_shares_output
+        let datum_check = and {
+            are_pool_datums_same_without_treasuries(
+              pool_input_datum,
+              pool_output_datum,
+            ),
+            pool_output_datum.treasury_a == pool_input_datum.treasury_a + treasury_diff_a,
+            pool_output_datum.treasury_b == pool_input_datum.treasury_b + treasury_diff_b,
+          }
+
+        and {
+          // failing this check means you need to swap more
+          (shares_earned_from_a <= shares_earned_from_b)?,
+          // failing this check means you need to swap less
+          (shares_earned_from_a1 > shares_earned_from_b1)?,
+          // some values don't make sense
+          (a_swap > 0)?,
+          // some values don't make sense
+          (a_swap < a_add)?,
+          datum_check?,
+          a_ada_asset_check?,
+          b_asset_check?,
+          shares_asset_check?,
+          (a_add > 0)?,
+          (shares_earned > 0)?,
+        }
+      } else {
+        // This is a balanced liquidity provision
+        let shares_earned_from_a =
+          a_add * shares_total_emitted / pool_input_a_liquidity
+        let shares_earned_from_b =
+          b_add * shares_total_emitted / pool_input_b_liquidity
+        let shares_earned = min(shares_earned_from_a, shares_earned_from_b)
+        let expected_shares_output = shares_input - shares_earned
+
+        let a_asset_check = as_output == as_input + a_add
+        let b_asset_check = bs_output == bs_input + b_add
+        let ada_check = ada_output >= pool_oil
+        let shares_asset_check = shares_output == expected_shares_output
+        let datum_check = pool_input_datum == pool_output_datum
+        and {
+          datum_check?,
+          a_asset_check?,
+          b_asset_check?,
+          ada_check?,
+          shares_asset_check?,
+          (a_add > 0)?,
+          (b_add > 0)?,
+          (shares_earned > 0)?,
+        }
       }
     }
 
