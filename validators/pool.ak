@@ -93,7 +93,7 @@ validator pool {
   // * The number of shares doesn't change
   // * The swap provides at least some tokens
   // * User receives at least some tokens NOTE: increasing the min swap makes it harder to block the pool
-  // * The swap fee is collected into the pool value
+  // * The swap/treasury fees are collected into the pool value
   //
   // For add liquidity
   // * Users gets the fair amount of compensation in shares
@@ -102,6 +102,7 @@ validator pool {
   // * The new pool shares are expected on the pool output value
   // * User provides at least some tokens
   // * User receives at least some shares
+  // * For zap-ins the provided simualetd swapX is the best possible for user
   //
   // NOTE: earned shares are determined as min(earned shares from added a, earned shares from added b)
   //       that means it's possible to donate liquidity into the pool.
@@ -112,10 +113,11 @@ validator pool {
   // For withdraw liquidity
   // * Users gets the fair amount of compensation in a/b tokens
   // * The new pool A/B values don't have the returned tokens
-  // * The new pool ada is at least pool oil
+  // * The new pool ada has at least pool oil
   // * The new shares are expected on the pool output value
   // * User provides at least some shares
   // * User receives at least some A and B tokens
+  // * For zap-outs the swap is simulated correctly
   //
   // NOTE: redeemed shares are taken from the redeemer and are assumed to be fully added into the pool
   //       strict equality is used for the pool value checks
